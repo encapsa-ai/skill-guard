@@ -7,7 +7,13 @@ const tokenPatterns = [
 ]
 
 export function redactSecrets(input: string): string {
-  let output = input.replace(/-----BEGIN [^\r\n]*PRIVATE KEY-----[\s\S]*?-----END [^\r\n]*PRIVATE KEY-----/g, (value) => value.replace(/[^\r\n]+/g, "[PRIVATE KEY REDACTED]"))
+  let insidePrivateKey = false
+  let output = input.replace(/[^\r\n]+/g, (line) => {
+    if (/-----BEGIN (?:[A-Z0-9 ]{1,40})?PRIVATE KEY-----/.test(line)) insidePrivateKey = true
+    if (!insidePrivateKey) return line
+    if (/-----END (?:[A-Z0-9 ]{1,40})?PRIVATE KEY-----/.test(line)) insidePrivateKey = false
+    return "[PRIVATE KEY REDACTED]"
+  })
   for (const pattern of tokenPatterns) output = output.replace(pattern, "[TOKEN REDACTED]")
   output = output.replace(/\b([\w-]{0,64}(?:secret|password|token|api[_-]?key|access[_-]?key)[\w-]{0,64}["']?\s{0,16}[:=]\s{0,16}["'])([^"'\r\n]{8,4096})(["'])/gi, "$1[SECRET REDACTED]$3")
   output = output.replace(/^([\w-]{0,64}(?:secret|password|token|api[_-]?key|access[_-]?key)[\w-]{0,64}\s{0,16}=\s{0,16})([^\s"'\r\n]{8,4096})/gim, "$1[SECRET REDACTED]")

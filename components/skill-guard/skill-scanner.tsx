@@ -146,7 +146,7 @@ export function SkillScanner() {
                           <p className="text-base font-semibold">{dragging ? "Drop them here. We’ll take a look." : "Drop your skill ZIPs here"}</p>
                           <p className="text-sm text-muted-foreground">or <button type="button" className="font-semibold text-foreground underline decoration-border underline-offset-4 hover:decoration-gold" disabled={busy || !scan.ready} onClick={() => fileInput.current?.click()}>browse files</button> to get started</p>
                         </div>
-                        <p id="upload-limits" className="font-mono text-sm text-muted-foreground">.ZIP files · Up to 5 skills · 4 MB each</p>
+                        <p id="upload-limits" className="font-mono text-sm text-muted-foreground"><span className="whitespace-nowrap">.ZIP files</span> · <span className="whitespace-nowrap">Up to 5 skills</span> · <span className="whitespace-nowrap">4 MB each</span></p>
                       </div>
                     </div>
                   </Field>

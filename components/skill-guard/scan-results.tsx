@@ -45,6 +45,7 @@ function ReportDetails({ report }: { report: ScanReport }) {
   const findings = report.findings.filter((finding) => severity === "all" || finding.severity === severity)
   return (
     <div className="flex flex-col gap-6">
+      <p className="break-all font-mono text-sm text-muted-foreground">{report.archiveName}</p>
       <div className="grid gap-3 sm:grid-cols-3">
         <div className="report-metric"><div className="flex flex-col gap-2"><span className="text-sm text-muted-foreground">Highest detected risk</span><span className="text-xl font-semibold tracking-tight">{riskLabel(report.riskLevel)}</span><span className="text-sm text-muted-foreground">{report.riskLevel === "none" ? "Not a guarantee of safety" : "Review before installing"}</span></div></div>
         <div className="report-metric"><div className="flex flex-col gap-2"><span className="text-sm text-muted-foreground">Content inspected</span><span className="text-xl font-semibold tracking-tight">{report.coverage.inspectedFiles} <span className="font-normal text-muted-foreground">/ {report.coverage.totalFiles} files</span></span><span className="text-sm text-muted-foreground">{report.coverage.uninspectedFiles ? `${report.coverage.uninspectedFiles} need separate review` : `${formatBytes(report.coverage.expandedBytes)} expanded`}</span></div></div>
@@ -54,7 +55,7 @@ function ReportDetails({ report }: { report: ScanReport }) {
       {!report.coverage.complete && <Alert><CircleAlert /><AlertTitle>Some content could not be inspected</AlertTitle><AlertDescription>Opaque files, nested archives, or missing skill metadata limit coverage. See the file inventory and scope before making a trust decision.</AlertDescription></Alert>}
       {report.aiReview.status === "unavailable" && <Alert><Info /><AlertTitle>AI review unavailable; static analysis completed</AlertTitle><AlertDescription>{report.aiReview.message}</AlertDescription></Alert>}
       <Tabs defaultValue="findings" className="gap-5">
-        <TabsList variant="line" className="max-w-full flex-wrap justify-start gap-3">
+        <TabsList variant="line" className="max-w-full flex-wrap justify-start gap-3 group-data-horizontal/tabs:h-auto [&>[role=tab]]:h-9">
           <TabsTrigger value="findings"><ShieldAlert data-icon="inline-start" />Findings ({report.findings.length})</TabsTrigger>
           <TabsTrigger value="files"><Layers data-icon="inline-start" />File inventory</TabsTrigger>
           <TabsTrigger value="scope"><FileSearch data-icon="inline-start" />Coverage & scope</TabsTrigger>
@@ -104,7 +105,7 @@ export function ScanResults({ reports, isSample, scanning }: { reports: ScanRepo
           <div className="flex items-center gap-2"><Button variant="outline" size="sm" onClick={() => downloadReports(reports, "json", isSample)} aria-label="Download JSON report"><CodeXml data-icon="inline-start" />JSON</Button><Button size="sm" onClick={() => downloadReports(reports, "html", isSample)}><Download data-icon="inline-start" />Download report</Button></div>
         </div>
         {isSample && <Alert><Info /><AlertTitle>Sample scan · real engine, synthetic indicators</AlertTitle><AlertDescription>This demonstration uses inert test files and reserved example domains, not real malware. Your own uploads are scanned by the same analysis engine.</AlertDescription></Alert>}
-        {reports.length === 1 ? <ReportDetails key={reports[0].id} report={reports[0]} /> : <Tabs defaultValue={reports[0].id} className="gap-5"><TabsList className="max-w-full flex-wrap justify-start">{reports.map((report) => <TabsTrigger key={report.id} value={report.id} className="max-w-52 truncate">{report.archiveName}</TabsTrigger>)}</TabsList>{reports.map((report) => <TabsContent key={report.id} value={report.id}><ReportDetails report={report} /></TabsContent>)}</Tabs>}
+        {reports.length === 1 ? <ReportDetails key={reports[0].id} report={reports[0]} /> : <Tabs defaultValue={reports[0].id} className="gap-5"><TabsList className="max-w-full flex-wrap justify-start group-data-horizontal/tabs:h-auto [&>[role=tab]]:h-9">{reports.map((report) => <TabsTrigger key={report.id} value={report.id} className="max-w-52 truncate">{report.archiveName}</TabsTrigger>)}</TabsList>{reports.map((report) => <TabsContent key={report.id} value={report.id}><ReportDetails report={report} /></TabsContent>)}</Tabs>}
         <div className="border-t pt-4 text-sm text-muted-foreground">Indicators are not proof of malicious intent. No findings is not proof of safety. Always review context before installing.</div>
       </div>
     </section>

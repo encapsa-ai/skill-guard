@@ -22,7 +22,7 @@ export function ThreatIntelligence() {
             <Badge variant="outline">8 threat categories</Badge>
           </div>
           <Tabs defaultValue="coverage" className="gap-6">
-            <TabsList variant="line" className="max-w-full flex-wrap justify-start gap-4">
+            <TabsList variant="line" className="max-w-full flex-wrap justify-start gap-4 group-data-horizontal/tabs:h-auto [&>[role=tab]]:h-9">
               <TabsTrigger value="coverage"><ShieldAlert data-icon="inline-start" />What we look for</TabsTrigger>
               <TabsTrigger value="sources"><BookOpen data-icon="inline-start" />Research & sources</TabsTrigger>
               <TabsTrigger value="scope"><FileSearch data-icon="inline-start" />Scan limitations</TabsTrigger>

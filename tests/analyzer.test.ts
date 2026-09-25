@@ -7,6 +7,7 @@ import { groundObservations, prepareReviewFiles, type AIObservation } from "../l
 import { buildHtmlReport } from "../lib/skill-guard/export-report"
 import { evidenceLine, redactSecrets } from "../lib/skill-guard/redaction"
 import { createSampleArchive } from "../lib/skill-guard/sample"
+import { SECURITY_RULES } from "../lib/skill-guard/rules"
 
 const manifest = "---\nname: helpful-skill\ndescription: Adds two numbers locally.\n---\n# Helpful skill\nUse the helper to add numbers.\n"
 
@@ -98,6 +99,17 @@ test("covers command substitution, quarantine removal, and input capture indicat
   for (const id of ["SG-016", "SG-037", "SG-038", "SG-039"]) assert.ok(report.findings.some((finding) => finding.ruleId === id), id)
 })
 
+test("network and quarantine patterns stay bounded on adversarial text", () => {
+  const cases = ["a".repeat(250_000), "a.".repeat(125_000), `xattr -${"c".repeat(250_000)}!`, `xattr -${"d".repeat(250_000)}!`]
+  const start = performance.now()
+  for (const content of cases) for (const rule of SECURITY_RULES) rule.pattern.test(content)
+  assert.ok(performance.now() - start < 1500, "security patterns exceeded the bounded-input budget")
+  const endpoint = SECURITY_RULES.find((rule) => rule.id === "SG-014")!
+  for (const url of ["https://review.ngrok-free.app/test", "https://review.ngrok.io/", "https://review.trycloudflare.com/"]) assert.ok(endpoint.pattern.test(url))
+  const quarantine = SECURITY_RULES.find((rule) => rule.id === "SG-038")!
+  for (const command of ["xattr -c artifact", "xattr -rd com.apple.quarantine artifact", "spctl --master-disable"]) assert.ok(quarantine.pattern.test(command))
+})
+
 test("same static engine analyzes the inert sample", async () => {
   const report = analyzeArchive(await inspectArchive(Buffer.from(createSampleArchive())), "sample.zip")
   assert.equal(report.files.length, 4)
@@ -128,6 +140,18 @@ test("redaction remains bounded for long adversarial nonmatching strings", () =>
   const start = performance.now()
   for (const text of ["a".repeat(200_000), "secret".repeat(34_000)]) assert.equal(redactSecrets(text), text)
   assert.ok(performance.now() - start < 1500, "redaction exceeded its linear-time safety budget")
+})
+
+test("private-key redaction handles unclosed and repeated blocks in linear time", () => {
+  const unclosed = "Before\n-----BEGIN PRIVATE KEY-----\nSYNTHETIC_KEY_MATERIAL\n"
+  assert.equal(redactSecrets(unclosed), "Before\n[PRIVATE KEY REDACTED]\n[PRIVATE KEY REDACTED]\n")
+  const repeated = "-----BEGIN RSA PRIVATE KEY-----\nSYNTHETIC\n".repeat(10_000)
+  const start = performance.now()
+  const redacted = redactSecrets(repeated)
+  assert.ok(performance.now() - start < 1000, "private-key redaction exceeded the linear-time budget")
+  assert.equal(redacted.split("\n").length, repeated.split("\n").length)
+  assert.ok(!redacted.includes("SYNTHETIC"))
+  assert.equal(redactSecrets("-----BEGIN EC PRIVATE KEY-----\nTEST\n-----END EC PRIVATE KEY-----\nAfter"), "[PRIVATE KEY REDACTED]\n[PRIVATE KEY REDACTED]\n[PRIVATE KEY REDACTED]\nAfter")
 })
 
 function internalFile(path: string, content: string): ArchiveFile {

@@ -38,7 +38,7 @@ export function Hero() {
           Powerful skills. <span className="hero-accent">Safer agents.</span>
         </h1>
         <p className="max-w-2xl text-pretty text-base leading-relaxed text-muted-foreground sm:text-lg">
-          Your AI skills can do a lot. Make sure it&apos;s what you intended.<br className="hidden sm:block" />
+          Your AI skills can do a lot. Make sure it&apos;s what you intended.{" "}<br className="hidden sm:block" />
           Uncover hidden threats before you give them access.
         </p>
       </div>

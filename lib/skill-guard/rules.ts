@@ -93,7 +93,7 @@ export const SECURITY_RULES: SecurityRule[] = [
   },
   {
     id: "SG-014", title: "Webhook, tunnel, or paste-service endpoint", severity: "medium", category: "exfiltration",
-    pattern: /(?:discord(?:app)?\.com\/api\/webhooks|api\.telegram\.org\/bot|webhook\.site|requestbin\.[a-z]+|[\w.-]+\.ngrok(?:-free)?\.(?:app|io)|[\w.-]+\.trycloudflare\.com|pastebin\.com\/raw)/i,
+    pattern: /(?:discord(?:app)?\.com\/api\/webhooks|api\.telegram\.org\/bot|webhook\.site|requestbin\.[a-z]+|(?<![\w.-])[\w.-]{1,253}\.(?:ngrok(?:-free)?\.(?:app|io)|trycloudflare\.com)\b|pastebin\.com\/raw)/i,
     description: "The file references a service often used for callbacks, tunneling, or payload hosting. These services also have legitimate uses; no reputation lookup was performed.",
     recommendation: "Confirm endpoint ownership and exactly what data is sent. Avoid unapproved temporary tunnels and public collection endpoints.", referenceIds: ["cisco", "snyk"],
   },
@@ -215,7 +215,7 @@ export const SECURITY_RULES: SecurityRule[] = [
   },
   {
     id: "SG-038", title: "Operating-system quarantine bypass", severity: "high", category: "persistence",
-    pattern: /\bxattr\s+-[a-z]*c[a-z]*\s+|\bxattr\s+-[a-z]*d[a-z]*\s+com\.apple\.quarantine|\bspctl\s+--(?:master-disable|global-disable)/i,
+    pattern: /\bxattr\s+-[a-z]{0,12}c[a-z]{0,12}\s+|\bxattr\s+-[a-z]{0,12}d[a-z]{0,12}\s+com\.apple\.quarantine|\bspctl\s+--(?:master-disable|global-disable)/i,
     description: "The content clears quarantine-related metadata or disables an operating-system execution safeguard. This appeared in documented macOS skill-malware delivery chains, though some troubleshooting guides also use it.",
     recommendation: "Keep operating-system protections enabled. Investigate why the artifact is blocked and verify its source and signature rather than bypassing the warning.", referenceIds: ["koi"],
   },

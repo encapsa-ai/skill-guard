@@ -7,6 +7,7 @@ import { MAX_ARCHIVES, MAX_ZIP_BYTES, type ScanReport } from "@/lib/skill-guard/
 export interface QueuedSkill {
   id: string
   file: File
+  sample?: boolean
   status: "queued" | "scanning" | "complete" | "error"
   error?: string
 }
@@ -61,6 +62,7 @@ export function useSkillScan() {
     if (busy.current) return
     const errors: string[] = []
     const accepted: QueuedSkill[] = []
+    const uploads = queue.filter((item) => !item.sample)
     for (const file of files) {
       if (!file.name.toLowerCase().endsWith(".zip")) {
         errors.push(`${file.name}: please choose a .zip archive.`)
@@ -70,24 +72,24 @@ export function useSkillScan() {
         errors.push(`${file.name}: this file is empty.`)
       } else if (file.name.length > 160) {
         errors.push("Please shorten filenames to 160 characters or fewer.")
-      } else if (queue.some((item) => item.file.name === file.name && item.file.size === file.size && item.file.lastModified === file.lastModified) || accepted.some((item) => item.file.name === file.name && item.file.size === file.size)) {
+      } else if (uploads.some((item) => item.file.name === file.name && item.file.size === file.size && item.file.lastModified === file.lastModified) || accepted.some((item) => item.file.name === file.name && item.file.size === file.size)) {
         errors.push(`${file.name}: already in your queue.`)
-      } else if (queue.length + accepted.length >= MAX_ARCHIVES) {
+      } else if (uploads.length + accepted.length >= MAX_ARCHIVES) {
         errors.push("You can scan up to 5 ZIP archives per batch.")
         break
       } else {
         accepted.push({ id: crypto.randomUUID(), file, status: "queued" })
       }
     }
-    setQueue((previous) => [...previous, ...accepted])
+    if (accepted.length) setQueue((previous) => [...previous.filter((item) => !item.sample), ...accepted])
     setError(errors.join(" "))
   }
 
-  async function scan(items: QueuedSkill[] = queue, sample = false) {
+  async function scan(items: QueuedSkill[] = queue) {
     if (busy.current || items.length === 0) return
     busy.current = true
     setIsScanning(true)
-    setIsSample(sample)
+    setIsSample(items.every((item) => item.sample))
     setReports([])
     setError("")
     setQueue(items.map((item) => ({ ...item, status: "queued", error: undefined })))
@@ -124,7 +126,7 @@ export function useSkillScan() {
     setError("")
     try {
       const file = await sampleTrigger()
-      await scan([{ id: crypto.randomUUID(), file, status: "queued" }], true)
+      await scan([{ id: crypto.randomUUID(), file, sample: true, status: "queued" }])
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The sample could not be loaded.")
     }
