@@ -59,7 +59,8 @@ function QueueItem({ item, disabled, onRemove }: { item: QueuedSkill; disabled: 
       <div className="flex items-center gap-3">
         <FileArchive className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <span className="truncate text-sm font-medium" title={item.file.name}>{item.file.name}</span>
+          <span className="truncate text-sm font-medium" title={item.skillName ?? item.file.name}>{item.skillName ?? item.file.name}</span>
+          {item.skillName && <span className="truncate font-mono text-sm text-muted-foreground" title={item.file.name}>{item.file.name}</span>}
           <span className="text-sm text-muted-foreground">{formatBytes(item.file.size)} · {item.status === "queued" ? "Ready to scan" : item.status === "scanning" ? "Inspecting…" : item.status === "complete" ? "Report ready" : "Not scanned"}</span>
         </div>
         {item.status === "scanning" && <LoaderCircle className="size-4 animate-spin" aria-label="Scanning" />}

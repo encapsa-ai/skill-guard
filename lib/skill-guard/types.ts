@@ -59,6 +59,7 @@ export interface ScanReport {
   archiveName: string
   archiveSha256: string
   skillName: string
+  skillNameSource: "frontmatter" | "heading" | "filename"
   scannedAt: string
   durationMs: number
   rulesetVersion: string
