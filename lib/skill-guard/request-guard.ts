@@ -40,11 +40,16 @@ export function reserveScan(request: Request) {
 
 export function validateScanRequest(request: Request) {
   const origin = request.headers.get("origin")
-  if (request.headers.get("sec-fetch-site") === "cross-site") throw new ArchiveError("Cross-site uploads are not accepted.", 403)
+  const fetchSite = request.headers.get("sec-fetch-site")
+  if (fetchSite === "cross-site") throw new ArchiveError("Cross-site uploads are not accepted.", 403)
   if (origin) {
-    let host: string
-    try { host = new URL(origin).host } catch { throw new ArchiveError("Invalid request origin.", 403) }
-    if (![new URL(request.url).host, request.headers.get("host")].includes(host)) throw new ArchiveError("Upload files from the Skill Guard page.", 403)
+    let source: URL
+    try { source = new URL(origin) } catch { throw new ArchiveError("Invalid request origin.", 403) }
+    if (!["http:", "https:"].includes(source.protocol) || source.origin !== origin) throw new ArchiveError("Invalid request origin.", 403)
+    const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim()
+    const publicHost = forwardedHost || request.headers.get("host") || new URL(request.url).host
+    // Browser-set Fetch Metadata preserves the public origin when a preview or deployment proxy rewrites Host.
+    if (fetchSite !== "same-origin" && source.host !== publicHost.toLowerCase()) throw new ArchiveError("Upload files from the Skill Guard page.", 403)
   }
   if (!request.headers.get("content-type")?.toLowerCase().startsWith("multipart/form-data;")) throw new ArchiveError("Upload a ZIP file using multipart form data.", 415)
   const declared = Number(request.headers.get("content-length"))

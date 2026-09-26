@@ -81,11 +81,11 @@ export function SkillScanner() {
   const completed = scan.queue.filter((item) => item.status === "complete" || item.status === "error").length
   const activeStep = scan.isScanning ? 1 : scan.reports.length > 0 ? 2 : 0
 
-  function onDrop(event: DragEvent<HTMLDivElement>) {
+  function onDrop(event: DragEvent<HTMLButtonElement>) {
     event.preventDefault()
     setDragging(false)
     dragDepth.current = 0
-    scan.addFiles(Array.from(event.dataTransfer.files))
+    if (!busy && scan.ready) scan.addFiles(Array.from(event.dataTransfer.files))
   }
 
   return (
@@ -131,24 +131,31 @@ export function SkillScanner() {
                         event.target.value = ""
                       }}
                     />
-                    <div
-                      className="dropzone"
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="dropzone h-auto w-full whitespace-normal"
+                      aria-label="Browse skill ZIP archives"
+                      aria-controls="skill-upload"
+                      aria-describedby="upload-limits"
+                      disabled={busy || !scan.ready}
                       data-dragging={dragging}
                       data-busy={busy}
+                      onClick={() => fileInput.current?.click()}
                       onDragOver={(event) => event.preventDefault()}
                       onDragEnter={(event) => { event.preventDefault(); dragDepth.current += 1; setDragging(true) }}
                       onDragLeave={(event) => { event.preventDefault(); dragDepth.current -= 1; if (dragDepth.current <= 0) setDragging(false) }}
                       onDrop={onDrop}
                     >
-                      <div className="flex flex-col items-center gap-3 text-center">
-                        <span className="flex size-12 items-center justify-center rounded-xl bg-secondary text-gold-foreground"><FolderUp className="size-6" strokeWidth={1.6} aria-hidden="true" /></span>
-                        <div className="flex flex-col gap-1">
-                          <p className="text-base font-semibold">{dragging ? "Drop them here. We’ll take a look." : "Drop your skill ZIPs here"}</p>
-                          <p className="text-sm text-muted-foreground">or <button type="button" className="font-semibold text-foreground underline decoration-border underline-offset-4 hover:decoration-gold" disabled={busy || !scan.ready} onClick={() => fileInput.current?.click()}>browse files</button> to get started</p>
-                        </div>
-                        <p id="upload-limits" className="font-mono text-sm text-muted-foreground"><span className="whitespace-nowrap">.ZIP files</span> · <span className="whitespace-nowrap">Up to 5 skills</span> · <span className="whitespace-nowrap">4 MB each</span></p>
-                      </div>
-                    </div>
+                      <span className="flex flex-col items-center gap-3 text-center">
+                        <span className="flex size-12 items-center justify-center rounded-xl bg-secondary text-gold-foreground"><FolderUp strokeWidth={1.6} aria-hidden="true" /></span>
+                        <span className="flex flex-col gap-1">
+                          <span className="text-base font-semibold">{dragging ? "Drop them here. We’ll take a look." : "Drop your skill ZIPs here"}</span>
+                          <span className="text-sm font-normal text-muted-foreground">or <span className="font-semibold text-foreground underline decoration-border underline-offset-4">browse files</span> to get started</span>
+                        </span>
+                        <span id="upload-limits" className="font-mono text-sm font-normal text-muted-foreground"><span className="whitespace-nowrap">.ZIP files</span> · <span className="whitespace-nowrap">Up to 5 skills</span> · <span className="whitespace-nowrap">4 MB each</span></span>
+                      </span>
+                    </Button>
                   </Field>
                   {scan.queue.length > 0 && (
                     <div className="flex flex-col gap-2">
