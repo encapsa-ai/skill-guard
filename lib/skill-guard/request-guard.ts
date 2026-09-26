@@ -1,40 +1,57 @@
-import { createHash } from "node:crypto"
 import { ArchiveError } from "./archive"
+import { quotaHeaders, ScanThrottleError, sharedScanLimits } from "./rate-limit"
 import { MAX_ZIP_BYTES } from "./types"
 
-const buckets = new Map<string, { expires: number; scans: number; ai: number }>()
 let activeScans = 0
 let activeAIReviews = 0
 
 // Instance-local backpressure is not a distributed quota; use Vercel Firewall for deployment-wide abuse controls.
-export function reserveScan(request: Request) {
-  const now = Date.now()
-  for (const [key, bucket] of buckets) if (bucket.expires <= now) buckets.delete(key)
-  const address = process.env.VERCEL ? request.headers.get("x-vercel-forwarded-for") ?? "shared" : "development"
-  const key = createHash("sha256").update(address).digest("hex")
-  const bucket = buckets.get(key) ?? { expires: now + 10 * 60_000, scans: 0, ai: 0 }
-  if (bucket.scans >= 25) throw new ArchiveError("The scan limit was reached. Please try again in 10 minutes.", 429)
-  if (activeScans >= 4 || (!buckets.has(key) && buckets.size >= 2000)) throw new ArchiveError("The analyzer is busy. Please try again shortly.", 503)
-  bucket.scans++
-  buckets.set(key, bucket)
+export async function reserveScan(request: Request) {
+  if (request.signal.aborted) throw new ArchiveError("The scan was cancelled.", 499)
+  if (activeScans >= 4) throw new ScanThrottleError("The analyzer is busy. Please try again shortly.", {
+    code: "busy", scope: "scan", retryAfterSeconds: 5,
+  })
   activeScans++
-  let ai = false
-  let released = false
-  return {
-    enableAI() {
-      if (ai) return
-      if (bucket.ai >= 8) throw new ArchiveError("The AI review limit was reached. Retry later or turn off AI-assisted review for a static scan.", 429)
-      if (activeAIReviews >= 2) throw new ArchiveError("AI review is busy. Retry shortly or use static analysis.", 503)
-      bucket.ai++
-      activeAIReviews++
-      ai = true
-    },
-    release() {
-      if (released) return
-      released = true
-      activeScans--
-      if (ai) activeAIReviews--
-    },
+  try {
+    const quota = await sharedScanLimits.consume(request, "scan")
+    if (request.signal.aborted) throw new ArchiveError("The scan was cancelled.", 499)
+    const headers = quotaHeaders(quota)
+    let holdsAI = false
+    let aiReservation: Promise<void> | undefined
+    let released = false
+    return {
+      headers,
+      async enableAI() {
+        if (released || request.signal.aborted) throw new ArchiveError("The scan was cancelled.", 499)
+        if (aiReservation) return aiReservation
+        if (activeAIReviews >= 2) throw new ScanThrottleError("AI review is busy. Retry shortly or use static analysis.", {
+          code: "busy", scope: "ai", retryAfterSeconds: 15,
+        })
+        activeAIReviews++
+        holdsAI = true
+        aiReservation = (async () => {
+          try {
+            const aiQuota = await sharedScanLimits.consume(request, "ai")
+            if (released || request.signal.aborted) throw new ArchiveError("The scan was cancelled.", 499)
+            Object.assign(headers, quotaHeaders(aiQuota, "X-AI-RateLimit"))
+          } catch (cause) {
+            if (holdsAI) { activeAIReviews--; holdsAI = false }
+            aiReservation = undefined
+            throw cause
+          }
+        })()
+        return aiReservation
+      },
+      release() {
+        if (released) return
+        released = true
+        activeScans--
+        if (holdsAI) { activeAIReviews--; holdsAI = false }
+      },
+    }
+  } catch (cause) {
+    activeScans--
+    throw cause
   }
 }
 

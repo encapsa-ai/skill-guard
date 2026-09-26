@@ -1,4 +1,14 @@
 export const MAX_ARCHIVES = 5
+export const SCAN_RATE_LIMIT = 25
+export const AI_REVIEW_RATE_LIMIT = 8
+export const RATE_LIMIT_WINDOW_SECONDS = 10 * 60
+export type RateLimitScope = "scan" | "ai"
+export interface ScanQuota {
+  scope: RateLimitScope
+  limit: number
+  remaining: number
+  reset: number
+}
 export const MAX_ZIP_BYTES = 4 * 1024 * 1024
 export const MAX_EXPANDED_BYTES = 20 * 1024 * 1024
 export const MAX_FILE_BYTES = 2 * 1024 * 1024
