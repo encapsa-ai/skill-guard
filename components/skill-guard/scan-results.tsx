@@ -1,12 +1,13 @@
 "use client"
 
-import { useState } from "react"
+import { useId, useState } from "react"
 import { ArrowUpRight, Check, CircleAlert, CodeXml, Download, FileCode2, FileSearch, Info, Layers, ShieldAlert, ShieldCheck, Sparkles } from "lucide-react"
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Field, FieldLabel } from "@/components/ui/field"
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { CATEGORIES, SEVERITY_ORDER, formatBytes, riskLabel, type Finding, type ScanReport, type Severity } from "@/lib/skill-guard/types"
 import { RESEARCH_SOURCES } from "@/lib/skill-guard/research"
@@ -44,8 +45,12 @@ function ReportDetails({ report }: { report: ScanReport }) {
   const [severity, setSeverity] = useState("all")
   const findings = report.findings.filter((finding) => severity === "all" || finding.severity === severity)
   return (
-    <div className="flex flex-col gap-6">
-      <p className="break-all font-mono text-sm text-muted-foreground">{report.archiveName}</p>
+    <div className="flex min-w-0 flex-col gap-6">
+      <div className="flex min-w-0 flex-col gap-1">
+        <h3 className="text-lg font-semibold text-pretty wrap-anywhere">{report.skillName}</h3>
+        <p className="break-all font-mono text-sm text-muted-foreground"><span className="font-sans">Archive: </span>{report.archiveName}</p>
+        {report.skillNameSource === "filename" && <p className="text-sm text-muted-foreground">No skill name was found in SKILL.md; using the archive name.</p>}
+      </div>
       <div className="grid gap-3 sm:grid-cols-3">
         <div className="report-metric"><div className="flex flex-col gap-2"><span className="text-sm text-muted-foreground">Highest detected risk</span><span className="text-xl font-semibold tracking-tight">{riskLabel(report.riskLevel)}</span><span className="text-sm text-muted-foreground">{report.riskLevel === "none" ? "Not a guarantee of safety" : "Review before installing"}</span></div></div>
         <div className="report-metric"><div className="flex flex-col gap-2"><span className="text-sm text-muted-foreground">Content inspected</span><span className="text-xl font-semibold tracking-tight">{report.coverage.inspectedFiles} <span className="font-normal text-muted-foreground">/ {report.coverage.totalFiles} files</span></span><span className="text-sm text-muted-foreground">{report.coverage.uninspectedFiles ? `${report.coverage.uninspectedFiles} need separate review` : `${formatBytes(report.coverage.expandedBytes)} expanded`}</span></div></div>
@@ -97,6 +102,12 @@ function ReportDetails({ report }: { report: ScanReport }) {
 }
 
 export function ScanResults({ reports, isSample, scanning }: { reports: ScanReport[]; isSample: boolean; scanning: boolean }) {
+  const selectorId = useId()
+  const [selectedReportId, setSelectedReportId] = useState("")
+  const selectedIndex = Math.max(0, reports.findIndex((report) => report.id === selectedReportId))
+  const selectedReport = reports[selectedIndex]
+  if (!selectedReport) return null
+
   return (
     <section id="scan-report" className="report-shell" aria-labelledby="report-title">
       <div className="flex flex-col gap-6">
@@ -105,7 +116,36 @@ export function ScanResults({ reports, isSample, scanning }: { reports: ScanRepo
           <div className="flex items-center gap-2"><Button variant="outline" size="sm" onClick={() => downloadReports(reports, "json", isSample)} aria-label="Download JSON report"><CodeXml data-icon="inline-start" />JSON</Button><Button size="sm" onClick={() => downloadReports(reports, "html", isSample)}><Download data-icon="inline-start" />Download report</Button></div>
         </div>
         {isSample && <Alert><Info /><AlertTitle>Sample scan · real engine, synthetic indicators</AlertTitle><AlertDescription>This demonstration uses inert test files and reserved example domains, not real malware. Your own uploads are scanned by the same analysis engine.</AlertDescription></Alert>}
-        {reports.length === 1 ? <ReportDetails key={reports[0].id} report={reports[0]} /> : <Tabs defaultValue={reports[0].id} className="gap-5"><TabsList className="max-w-full flex-wrap justify-start group-data-horizontal/tabs:h-auto [&>[role=tab]]:h-9">{reports.map((report) => <TabsTrigger key={report.id} value={report.id} className="max-w-52 truncate">{report.archiveName}</TabsTrigger>)}</TabsList>{reports.map((report) => <TabsContent key={report.id} value={report.id}><ReportDetails report={report} /></TabsContent>)}</Tabs>}
+        {reports.length > 1 && (
+          <Field className="min-w-0 sm:max-w-2xl">
+            <div className="flex items-center justify-between gap-3">
+              <FieldLabel htmlFor={selectorId}>Select skill</FieldLabel>
+              <span id={`${selectorId}-position`} role="status" className="shrink-0 text-sm text-muted-foreground">{selectedIndex + 1} of {reports.length}</span>
+            </div>
+            <Select
+              items={reports.map((report) => ({ value: report.id, label: report.skillName }))}
+              value={selectedReport.id}
+              onValueChange={(value) => { if (value) setSelectedReportId(value) }}
+            >
+              <SelectTrigger id={selectorId} aria-describedby={`${selectorId}-position`} className="w-full min-w-0 data-[size=default]:h-11" title={selectedReport.skillName}>
+                <SelectValue className="min-w-0"><span className="truncate">{selectedReport.skillName}</span></SelectValue>
+              </SelectTrigger>
+              <SelectContent align="start" alignItemWithTrigger={false}>
+                <SelectGroup>
+                  {reports.map((report) => (
+                    <SelectItem key={report.id} value={report.id} label={report.skillName} className="min-w-0">
+                      <span className="flex min-w-0 flex-1 flex-col gap-1">
+                        <span className="whitespace-normal wrap-anywhere">{report.skillName}</span>
+                        <span className="font-mono text-sm whitespace-normal text-muted-foreground wrap-anywhere">{report.archiveName}</span>
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </Field>
+        )}
+        <ReportDetails key={selectedReport.id} report={selectedReport} />
         <div className="border-t pt-4 text-sm text-muted-foreground">Indicators are not proof of malicious intent. No findings is not proof of safety. Always review context before installing.</div>
       </div>
     </section>

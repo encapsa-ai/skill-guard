@@ -9,7 +9,8 @@ export function buildHtmlReport(reports: ScanReport[], sample = false) {
   const e = escapeHtml
   const sections = reports.map((report) => `
     <section>
-      <h2>${e(report.archiveName)}</h2>
+      <h2>${e(report.skillName)}</h2>
+      <p class="hash">Archive: ${e(report.archiveName)}</p>${report.skillNameSource === "filename" ? "<p>No skill name was found in SKILL.md; using the archive name.</p>" : ""}
       <p class="verdict">${e(riskLabel(report.riskLevel))}${!report.coverage.complete ? " · Incomplete content coverage" : ""}</p>
       <p>${e(report.summary)}</p>
       <dl><dt>Scan time (UTC)</dt><dd>${e(report.scannedAt)}</dd><dt>Ruleset</dt><dd>${e(report.rulesetVersion)} · ${report.rulesChecked} checks</dd><dt>SHA-256</dt><dd class="hash">${e(report.archiveSha256)}</dd><dt>Coverage</dt><dd>${report.coverage.inspectedFiles} / ${report.coverage.totalFiles} file contents inspected · ${e(formatBytes(report.coverage.expandedBytes))} expanded</dd><dt>AI review</dt><dd>${e(report.aiReview.status)}${report.aiReview.model ? ` · ${e(report.aiReview.model)}` : ""}. ${e(report.aiReview.message)}</dd></dl>

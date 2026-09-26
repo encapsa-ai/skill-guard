@@ -1,11 +1,48 @@
 import { randomUUID } from "node:crypto"
+import { isMap, isScalar, parseDocument } from "yaml"
 import type { ArchiveFile, InspectedArchive } from "./archive"
 import { evidenceLine, redactSecrets, visibleText } from "./redaction"
 import { SECURITY_RULES } from "./rules"
 import { RULESET_VERSION, SEVERITY_ORDER, type Finding, type ScanReport } from "./types"
 
 const MAX_REPORTED_FINDINGS = 200
+const MAX_METADATA_CHARACTERS = 16_384
+const FRONTMATTER = /^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/
 export const STATIC_CHECK_COUNT = SECURITY_RULES.length + 4
+
+function normalizeSkillName(value: string) {
+  return visibleText(redactSecrets(value)).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 160)
+}
+
+function extractSkillName(manifest: ArchiveFile | undefined, archiveName: string): Pick<ScanReport, "skillName" | "skillNameSource"> {
+  const content = manifest?.content ?? ""
+  const prefix = content.slice(0, MAX_METADATA_CHARACTERS)
+  const frontmatter = FRONTMATTER.exec(prefix)
+
+  if (frontmatter) {
+    try {
+      const document = parseDocument(frontmatter[1], { schema: "core", resolveKnownTags: false, prettyErrors: false })
+      if (!document.errors.length && !document.warnings.length && isMap(document.contents)) {
+        // Read only the scalar node; never expand aliases or instantiate custom YAML tags.
+        const node = document.get("name", true)
+        if (isScalar(node) && typeof node.value === "string") {
+          const skillName = normalizeSkillName(node.value)
+          if (skillName) return { skillName, skillNameSource: "frontmatter" }
+        }
+      }
+    } catch {
+      // Malformed or resource-exhausting metadata must not prevent the security scan.
+    }
+  }
+
+  const hasUnclosedFrontmatter = !frontmatter && /^\uFEFF?---[ \t]*\r?\n/.test(prefix)
+  const body = frontmatter ? content.slice(frontmatter[0].length, frontmatter[0].length + MAX_METADATA_CHARACTERS) : prefix
+  const heading = hasUnclosedFrontmatter ? undefined : body.trimStart().match(/^#[ \t]+([^\r\n]+)/)?.[1]?.replace(/[ \t]+#+[ \t]*$/, "")
+  const headingName = heading ? normalizeSkillName(heading) : ""
+  return headingName
+    ? { skillName: headingName, skillNameSource: "heading" }
+    : { skillName: normalizeSkillName(archiveName.replace(/\.zip$/i, "")) || "Unnamed skill", skillNameSource: "filename" }
+}
 
 function priority(finding: Finding) {
   return SEVERITY_ORDER.indexOf(finding.severity)
@@ -151,9 +188,11 @@ export function analyzeArchive(archive: InspectedArchive, archiveName: string, s
     if (dependency) add(dependency)
   }
 
-  const manifests = archive.files.filter((file) => /(?:^|\/)SKILL\.md$/i.test(file.path) && file.content !== null)
+  const manifests = archive.files
+    .filter((file) => /(?:^|\/)SKILL\.md$/i.test(file.path) && file.content !== null)
+    .sort((a, b) => a.path.split("/").length - b.path.split("/").length || a.path.localeCompare(b.path))
   const manifest = manifests[0]
-  if (!manifest || !/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.test(manifest.content!)) {
+  if (!manifest || !FRONTMATTER.test(manifest.content!)) {
     add({
       id: randomUUID(), ruleId: "SG-036", title: manifest ? "Missing skill frontmatter" : "No readable SKILL.md manifest", severity: "low", category: "integrity",
       file: manifest?.path ?? "(archive)", line: manifest ? 1 : null,
@@ -175,10 +214,9 @@ export function analyzeArchive(archive: InspectedArchive, archiveName: string, s
   ]
   if (inspectedFiles < archive.files.length) limitations.unshift(`${archive.files.length - inspectedFiles} file(s) were inventoried and hashed but their contents were not inspected. Review the file inventory.`)
   if (omitted) limitations.unshift(`The report retains the ${MAX_REPORTED_FINDINGS} highest-priority findings; ${omitted} additional indicators are omitted. Every accepted text file was still checked.`)
-  const name = manifest?.content?.match(/^name:\s*["']?([^\r\n"']+)/m)?.[1]?.trim().slice(0, 80)
   return finalizeReport({
     id: randomUUID(), archiveName: redactSecrets(archiveName), archiveSha256: archive.sha256,
-    skillName: name ? redactSecrets(name) : archiveName.replace(/\.zip$/i, ""),
+    ...extractSkillName(manifest, archiveName),
     scannedAt: new Date().toISOString(), durationMs: Date.now() - startedAt,
     rulesetVersion: RULESET_VERSION, rulesChecked: STATIC_CHECK_COUNT,
     riskLevel: "none", summary: "", findings,

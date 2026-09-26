@@ -7,6 +7,7 @@ import { MAX_ARCHIVES, MAX_ZIP_BYTES, type ScanReport } from "@/lib/skill-guard/
 export interface QueuedSkill {
   id: string
   file: File
+  skillName?: string
   sample?: boolean
   status: "queued" | "scanning" | "complete" | "error"
   error?: string
@@ -103,7 +104,7 @@ export function useSkillScan() {
           const report = await trigger({ file: item.file, aiReview, signal: controller.signal })
           if (controller.signal.aborted) break
           setReports((previous) => [...previous, report])
-          setQueue((previous) => previous.map((entry) => entry.id === item.id ? { ...entry, status: "complete" } : entry))
+          setQueue((previous) => previous.map((entry) => entry.id === item.id ? { ...entry, status: "complete", skillName: report.skillName } : entry))
         } catch (cause) {
           if (controller.signal.aborted) break
           const message = cause instanceof Error ? cause.message : "This archive could not be scanned."
