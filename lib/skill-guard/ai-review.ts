@@ -100,7 +100,15 @@ Return at most 12 additional, useful observations. Each must cite an EXACT suppl
         message: `${selected.length} of ${totalTextFiles} text files reviewed; ${grounded.findings.length} additional evidence-matched observations. ${selected.length < totalTextFiles ? "Whole files exceeding the 80,000-character input budget were omitted. " : ""}${grounded.rejected ? `${grounded.rejected} unsupported observation(s) were discarded. ` : ""}AI findings are advisory and cannot remove static findings.`,
       },
     })
-  } catch {
+  } catch (cause) {
+    const errors: Record<string, unknown>[] = []
+    let current: unknown = cause
+    for (let depth = 0; depth < 5 && current && typeof current === "object"; depth++) {
+      const error = current as Record<string, unknown>
+      errors.push({ name: error.name, statusCode: error.statusCode, finishReason: error.finishReason, isRetryable: error.isRetryable })
+      current = error.cause
+    }
+    console.log("[v0] AI review failure diagnostics", JSON.stringify(errors))
     return {
       ...report,
       aiReview: {
