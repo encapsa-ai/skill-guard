@@ -12,6 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { CATEGORIES, SEVERITY_ORDER, formatBytes, riskLabel, type Finding, type ScanReport, type Severity } from "@/lib/skill-guard/types"
 import { RESEARCH_SOURCES } from "@/lib/skill-guard/research"
 import { downloadReports } from "@/lib/skill-guard/export-report"
+import { AIReviewDetails, AIReviewSummary } from "./ai-review-results"
 
 function SeverityBadge({ severity }: { severity: Severity }) {
   return <Badge variant={severity === "critical" || severity === "high" ? "destructive" : severity === "medium" ? "secondary" : "outline"}>{severity.charAt(0).toUpperCase() + severity.slice(1)}</Badge>
@@ -42,8 +43,11 @@ function FindingItem({ finding }: { finding: Finding }) {
 }
 
 function ReportDetails({ report }: { report: ScanReport }) {
+  const hasAIReview = report.aiReview.status !== "not-requested"
+  const [activeTab, setActiveTab] = useState(hasAIReview ? "ai-review" : "findings")
   const [severity, setSeverity] = useState("all")
-  const findings = report.findings.filter((finding) => severity === "all" || finding.severity === severity)
+  const [source, setSource] = useState("all")
+  const findings = report.findings.filter((finding) => (severity === "all" || finding.severity === severity) && (source === "all" || finding.source === source))
   return (
     <div className="flex min-w-0 flex-col gap-6">
       <div className="flex min-w-0 flex-col gap-1">
@@ -51,30 +55,35 @@ function ReportDetails({ report }: { report: ScanReport }) {
         <p className="break-all font-mono text-sm text-muted-foreground"><span className="font-sans">Archive: </span>{report.archiveName}</p>
         {report.skillNameSource === "filename" && <p className="text-sm text-muted-foreground">No skill name was found in SKILL.md; using the archive name.</p>}
       </div>
+      {hasAIReview && <AIReviewSummary report={report} />}
       <div className="grid gap-3 sm:grid-cols-3">
         <div className="report-metric"><div className="flex flex-col gap-2"><span className="text-sm text-muted-foreground">Highest detected risk</span><span className="text-xl font-semibold tracking-tight">{riskLabel(report.riskLevel)}</span><span className="text-sm text-muted-foreground">{report.riskLevel === "none" ? "Not a guarantee of safety" : "Review before installing"}</span></div></div>
-        <div className="report-metric"><div className="flex flex-col gap-2"><span className="text-sm text-muted-foreground">Content inspected</span><span className="text-xl font-semibold tracking-tight">{report.coverage.inspectedFiles} <span className="font-normal text-muted-foreground">/ {report.coverage.totalFiles} files</span></span><span className="text-sm text-muted-foreground">{report.coverage.uninspectedFiles ? `${report.coverage.uninspectedFiles} need separate review` : `${formatBytes(report.coverage.expandedBytes)} expanded`}</span></div></div>
+        <div className="report-metric"><div className="flex flex-col gap-2"><span className="text-sm text-muted-foreground">{hasAIReview ? "Static content inspection" : "Content inspected"}</span><span className="text-xl font-semibold tracking-tight">{report.coverage.inspectedFiles} <span className="font-normal text-muted-foreground">/ {report.coverage.totalFiles} files</span></span><span className="text-sm text-muted-foreground">{report.coverage.uninspectedFiles ? `${report.coverage.uninspectedFiles} need separate review` : `${formatBytes(report.coverage.expandedBytes)} expanded`}</span></div></div>
         <div className="report-metric"><div className="flex flex-col gap-2"><span className="text-sm text-muted-foreground">Flagged indicators</span><span className="text-xl font-semibold tracking-tight">{report.findings.length} <span className="font-normal text-muted-foreground">findings</span></span><span className="text-sm text-muted-foreground">{report.rulesChecked} static checks + archive checks</span></div></div>
       </div>
       <p className="text-sm leading-relaxed text-muted-foreground">{report.summary}</p>
       {!report.coverage.complete && <Alert><CircleAlert /><AlertTitle>Some content could not be inspected</AlertTitle><AlertDescription>Opaque files, nested archives, or missing skill metadata limit coverage. See the file inventory and scope before making a trust decision.</AlertDescription></Alert>}
-      {report.aiReview.status === "unavailable" && <Alert><Info /><AlertTitle>AI review unavailable; static analysis completed</AlertTitle><AlertDescription>{report.aiReview.message}</AlertDescription></Alert>}
-      <Tabs defaultValue="findings" className="gap-5">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="gap-5">
         <TabsList variant="line" className="max-w-full flex-wrap justify-start gap-3 group-data-horizontal/tabs:h-auto [&>[role=tab]]:h-9">
+          {hasAIReview && <TabsTrigger value="ai-review"><Sparkles data-icon="inline-start" />AI deep review</TabsTrigger>}
           <TabsTrigger value="findings"><ShieldAlert data-icon="inline-start" />Findings ({report.findings.length})</TabsTrigger>
           <TabsTrigger value="files"><Layers data-icon="inline-start" />File inventory</TabsTrigger>
           <TabsTrigger value="scope"><FileSearch data-icon="inline-start" />Coverage & scope</TabsTrigger>
         </TabsList>
+        {hasAIReview && <TabsContent value="ai-review"><AIReviewDetails report={report} onViewFindings={() => { setSource("all"); setSeverity("all"); setActiveTab("findings") }} /></TabsContent>}
         <TabsContent value="findings">
           <div className="flex flex-col gap-3">
-            <Field orientation="horizontal" className="w-auto self-end">
-              <FieldLabel htmlFor={`severity-${report.id}`} className="sr-only">Filter findings by severity</FieldLabel>
-              <select id={`severity-${report.id}`} value={severity} onChange={(event) => setSeverity(event.target.value)} className="h-9 rounded-lg border bg-card px-3 text-sm text-card-foreground">
-                <option value="all">All severities</option>
-                {SEVERITY_ORDER.map((level) => <option key={level} value={level}>{level.charAt(0).toUpperCase() + level.slice(1)} ({report.findings.filter((finding) => finding.severity === level).length})</option>)}
-              </select>
-            </Field>
-            {findings.length ? <Accordion multiple defaultValue={[findings[0].id]}>{findings.map((finding) => <FindingItem key={finding.id} finding={finding} />)}</Accordion> : <Alert><ShieldCheck /><AlertTitle>{report.findings.length ? "No findings at this severity" : "No configured indicators detected"}</AlertTitle><AlertDescription>{report.findings.length ? "Choose another severity to see the other findings." : "This does not certify the skill as safe. Review its purpose, permissions, dependencies, and any uninspected files."}</AlertDescription></Alert>}
+            <div className="flex flex-wrap justify-end gap-3">
+              {hasAIReview && <Field orientation="horizontal" className="w-auto"><FieldLabel htmlFor={`source-${report.id}`} className="sr-only">Filter findings by source</FieldLabel><select id={`source-${report.id}`} value={source} onChange={(event) => setSource(event.target.value)} className="h-9 rounded-lg border bg-card px-3 text-sm text-card-foreground"><option value="all">All analysis</option><option value="static">Static findings ({report.findings.filter((finding) => finding.source === "static").length})</option><option value="ai">AI findings ({report.findings.filter((finding) => finding.source === "ai").length})</option></select></Field>}
+              <Field orientation="horizontal" className="w-auto">
+                <FieldLabel htmlFor={`severity-${report.id}`} className="sr-only">Filter findings by severity</FieldLabel>
+                <select id={`severity-${report.id}`} value={severity} onChange={(event) => setSeverity(event.target.value)} className="h-9 rounded-lg border bg-card px-3 text-sm text-card-foreground">
+                  <option value="all">All severities</option>
+                  {SEVERITY_ORDER.map((level) => <option key={level} value={level}>{level.charAt(0).toUpperCase() + level.slice(1)} ({report.findings.filter((finding) => finding.severity === level).length})</option>)}
+                </select>
+              </Field>
+            </div>
+            {findings.length ? <Accordion multiple defaultValue={[findings[0].id]}>{findings.map((finding) => <FindingItem key={finding.id} finding={finding} />)}</Accordion> : <Alert><ShieldCheck /><AlertTitle>{report.findings.length ? "No findings match these filters" : "No configured indicators detected"}</AlertTitle><AlertDescription>{report.findings.length ? "Choose another source or severity to see the other findings." : "This does not certify the skill as safe. Review its purpose, permissions, dependencies, and any uninspected files."}</AlertDescription></Alert>}
           </div>
         </TabsContent>
         <TabsContent value="files">
@@ -112,7 +121,7 @@ export function ScanResults({ reports, isSample, scanning }: { reports: ScanRepo
     <section id="scan-report" className="report-shell" aria-labelledby="report-title">
       <div className="flex flex-col gap-6">
         <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
-          <div className="flex flex-col gap-2"><div className="flex items-center gap-2"><ShieldCheck className="size-5 text-gold-foreground" aria-hidden="true" /><h2 id="report-title" className="text-2xl font-semibold tracking-tight">Your security report</h2></div><p className="text-sm text-muted-foreground" role="status">{scanning ? "Reports appear as each archive finishes." : `${reports.length} ${reports.length === 1 ? "archive" : "archives"} analyzed. Here’s what we found.`}</p></div>
+          <div className="flex flex-col gap-2"><div className="flex items-center gap-2"><ShieldCheck className="size-5 text-gold-foreground" aria-hidden="true" /><h2 id="report-title" className="text-2xl font-semibold tracking-tight">{selectedReport.aiReview.status === "not-requested" ? "Your security report" : "Your AI-enhanced security report"}</h2></div><p className="text-sm text-muted-foreground" role="status">{scanning ? "Reports appear as each archive finishes." : `${reports.length} ${reports.length === 1 ? "archive" : "archives"} analyzed. Here’s what we found.`}</p></div>
           <div className="flex items-center gap-2"><Button variant="outline" size="sm" onClick={() => downloadReports(reports, "json", isSample)} aria-label="Download JSON report"><CodeXml data-icon="inline-start" />JSON</Button><Button size="sm" onClick={() => downloadReports(reports, "html", isSample)}><Download data-icon="inline-start" />Download report</Button></div>
         </div>
         {isSample && <Alert><Info /><AlertTitle>Sample scan · real engine, synthetic indicators</AlertTitle><AlertDescription>This demonstration uses inert test files and reserved example domains, not real malware. Your own uploads are scanned by the same analysis engine.</AlertDescription></Alert>}

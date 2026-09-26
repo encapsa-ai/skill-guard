@@ -5,7 +5,7 @@ import { readBoundedFormData, reserveScan, validateScanRequest } from "@/lib/ski
 import { MAX_ZIP_BYTES } from "@/lib/skill-guard/types"
 
 export const runtime = "nodejs"
-export const maxDuration = 90
+export const maxDuration = 180
 
 const responseHeaders = { "Cache-Control": "no-store, max-age=0" }
 
@@ -31,7 +31,7 @@ export async function POST(request: Request) {
     const archive = await inspectArchive(Buffer.from(await upload.arrayBuffer()), request.signal)
     let report = analyzeArchive(archive, upload.name, started)
     if (ai === "true" && !request.signal.aborted) {
-      report = await addAIReview(report, archive.files, request.signal, { timeoutMs: Math.max(0, 80_000 - (Date.now() - started)) })
+      report = await addAIReview(report, archive.files, request.signal, { timeoutMs: Math.max(0, 165_000 - (Date.now() - started)) })
     }
     if (request.signal.aborted) throw new ArchiveError("The scan was cancelled.", 499)
     report.durationMs = Date.now() - started

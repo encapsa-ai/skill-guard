@@ -48,6 +48,44 @@ export interface FileInventory {
 
 export type AIReviewFailureCode = "timeout" | "cancelled" | "rate-limited" | "configuration" | "credits" | "provider-error" | "invalid-response" | "output-limit" | "content-filter" | "input-limit" | "unknown"
 
+export const AI_REVIEW_METHODS = [
+  { id: "intent", title: "Instruction intent", description: "Looks beyond keywords for role overrides, misleading instructions, and behavior outside the declared purpose.", categories: ["prompt-injection"] },
+  { id: "data-flow", title: "Sensitive data flow", description: "Examines how secrets and private data are accessed, handled, and potentially sent elsewhere.", categories: ["credentials", "exfiltration"] },
+  { id: "execution", title: "Execution & dependencies", description: "Reviews setup commands, script behavior, remote code, and dependency trust boundaries.", categories: ["execution", "supply-chain"] },
+  { id: "privileges", title: "Privilege & persistence", description: "Checks requested access, lasting changes, and agent-memory or configuration manipulation.", categories: ["persistence"] },
+  { id: "consistency", title: "Cross-file consistency", description: "Compares the supplied manifest context with supporting files in each review batch; unseen files cannot be compared.", categories: ["integrity"] },
+  { id: "concealment", title: "Hidden behavior", description: "Looks for disguised instructions, encoded content, and a mismatch between presentation and behavior.", categories: ["obfuscation"] },
+] as const satisfies readonly { id: string; title: string; description: string; categories: readonly Category[] }[]
+
+export type AIReviewMethodId = typeof AI_REVIEW_METHODS[number]["id"]
+
+export interface AICitation {
+  file: string
+  line: number
+  evidence: string
+}
+
+export interface AIMethodNote {
+  summary: string
+  citations: AICitation[]
+  batch: number
+}
+
+export interface AIMethodReview {
+  id: AIReviewMethodId
+  status: "reviewed" | "limited" | "not-reviewed"
+  notes: AIMethodNote[]
+  findingCount: number
+}
+
+export interface AIFileCoverage {
+  file: string
+  totalCharacters: number
+  reviewedCharacters: number
+  reviewedRanges: { startLine: number; endLine: number }[]
+  status: "complete" | "partial" | "not-reviewed"
+}
+
 export interface AIReview {
   status: "not-requested" | "complete" | "partial" | "unavailable"
   model: string | null
@@ -56,6 +94,24 @@ export interface AIReview {
   message: string
   attempts?: number
   failureCode?: AIReviewFailureCode
+  methods?: AIMethodReview[]
+  coverage?: {
+    reviewedCharacters: number
+    totalCharacters: number
+    reviewedChunks: number
+    plannedChunks: number
+    completedBatches: number
+    plannedBatches: number
+    fullyReviewedFiles: number
+    partiallyReviewedFiles: number
+    files: AIFileCoverage[]
+  }
+  validation?: {
+    acceptedObservations: number
+    discardedObservations: number
+    discardedAssessments: number
+    relocatedCitations: number
+  }
 }
 
 export interface ScanReport {

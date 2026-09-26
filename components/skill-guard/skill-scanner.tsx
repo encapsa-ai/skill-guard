@@ -6,7 +6,7 @@ import { ArrowRight, ArrowUpRight, Check, CircleAlert, CodeXml, FileArchive, Fin
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { Field, FieldContent, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field"
+import { Field, FieldContent, FieldGroup, FieldLabel } from "@/components/ui/field"
 import { Progress, ProgressLabel, ProgressValue } from "@/components/ui/progress"
 import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
@@ -174,10 +174,10 @@ export function SkillScanner() {
                         <FieldLabel htmlFor="ai-review">AI-assisted deep review</FieldLabel>
                         <Tooltip>
                           <TooltipTrigger aria-label="About AI-assisted review" className="text-muted-foreground"><Info className="size-3.5" /></TooltipTrigger>
-                          <TooltipContent>Optional contextual review of supported text. Static findings cannot be removed by the AI. Provider retention policies apply.</TooltipContent>
+                          <TooltipContent>Six contextual security lenses with source-backed notes. When enabled, redacted source text is sent to Anthropic via AI Gateway. Remove secrets first; provider retention policies apply. AI cannot remove static findings.</TooltipContent>
                         </Tooltip>
                       </div>
-                      <FieldDescription id="ai-disclosure">{scan.aiReview ? "Enabled: redacted source text goes to Anthropic via AI Gateway. Remove secrets first; provider retention policies apply." : "Add a second perspective. Off by default for privacy."}</FieldDescription>
+                      <span id="ai-disclosure" className="sr-only">Optional. Sends redacted source text to Anthropic via AI Gateway. Remove secrets first; provider retention policies apply.</span>
                     </FieldContent>
                     <Switch id="ai-review" checked={scan.aiReview} onCheckedChange={scan.setAiReview} disabled={busy || !scan.ready} aria-describedby="ai-disclosure" />
                   </Field>
