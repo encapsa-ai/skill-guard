@@ -46,12 +46,16 @@ export interface FileInventory {
   findings: number
 }
 
+export type AIReviewFailureCode = "timeout" | "cancelled" | "rate-limited" | "configuration" | "credits" | "provider-error" | "invalid-response" | "output-limit" | "content-filter" | "input-limit" | "unknown"
+
 export interface AIReview {
   status: "not-requested" | "complete" | "partial" | "unavailable"
   model: string | null
   reviewedFiles: number
   totalTextFiles: number
   message: string
+  attempts?: number
+  failureCode?: AIReviewFailureCode
 }
 
 export interface ScanReport {
