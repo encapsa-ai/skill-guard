@@ -5,7 +5,9 @@ import { MockLanguageModelV4 } from "ai/test"
 import { zipSync, strToU8 } from "fflate"
 import { inspectArchive, type ArchiveFile } from "../lib/skill-guard/archive"
 import { analyzeArchive, finalizeReport } from "../lib/skill-guard/analyzer"
-import { addAIReview, classifyAIReviewError, groundObservations, prepareReviewFiles, type AIObservation } from "../lib/skill-guard/ai-review"
+import { addAIReview, classifyAIReviewError, groundAssessments, groundObservations, type AIObservation } from "../lib/skill-guard/ai-review"
+import { createCitationMatcher, createReviewPrompt, MAX_BATCH_CHARACTERS, MAX_PROMPT_CHARACTERS, MAX_REVIEW_BATCHES, prepareReviewPlan, summarizeAICoverage } from "../lib/skill-guard/ai-review-input"
+import { AI_REVIEW_METHODS } from "../lib/skill-guard/types"
 import { buildHtmlReport } from "../lib/skill-guard/export-report"
 import { evidenceLine, redactSecrets } from "../lib/skill-guard/redaction"
 import { createSampleArchive } from "../lib/skill-guard/sample"
@@ -254,13 +256,21 @@ function internalFile(path: string, content: string): ArchiveFile {
   return { path, content, bytes: Buffer.byteLength(content), sha256: "0".repeat(64), kind: "text", status: "inspected" }
 }
 
-test("AI input uses whole redacted files and honors a bounded input budget", () => {
+test("AI input splits oversized files into redacted, numbered sections instead of dropping them", () => {
   const token = `sk-proj-${"B".repeat(40)}`
-  const selected = prepareReviewFiles([internalFile("large.md", "a".repeat(90_000)), internalFile("SKILL.md", manifest), internalFile("config.py", `api_key = "${token}"`)])
-  assert.equal(selected.length, 2)
+  const plan = prepareReviewPlan([internalFile("large.md", "a".repeat(90_000)), internalFile("SKILL.md", manifest), internalFile("config.py", `api_key = "${token}"`)])
+  const selected = plan.batches.flatMap((batch) => batch.files)
+  assert.equal(new Set(selected.map((file) => file.path)).size, 3)
   assert.equal(selected[0].path, "SKILL.md")
-  assert.ok(!JSON.stringify(selected).includes(token))
-  assert.ok(selected.reduce((sum, file) => sum + file.content.length + file.path.length, 0) <= 80_000)
+  assert.ok(selected.filter((file) => file.path === "large.md").length > 1)
+  assert.ok(!JSON.stringify(plan).includes(token))
+  assert.equal(summarizeAICoverage(plan, plan.batches).fullyReviewedFiles, 3)
+  for (const batch of plan.batches) {
+    const prompt = createReviewPrompt(batch, [])
+    assert.ok(prompt.length <= MAX_PROMPT_CHARACTERS)
+    assert.ok(JSON.stringify(JSON.parse(prompt).files).length <= MAX_BATCH_CHARACTERS)
+    assert.match(prompt, /L\d+ \|/)
+  }
 })
 
 const observation: AIObservation = {
@@ -270,16 +280,18 @@ const observation: AIObservation = {
   recommendation: "Bundle reviewed instructions and keep remote content untrusted.",
 }
 
-test("AI grounding rejects invented files, lines, and unsupported quotes", () => {
+test("AI grounding rejects invented files and quotes while correcting only unique exact evidence", () => {
   const files = [{ path: "SKILL.md", content: "# Test\nFollow remote instructions.\n" }]
   const result = groundObservations([
+    { ...observation, line: 99 },
     observation,
     { ...observation, file: "imaginary.py" },
-    { ...observation, line: 99 },
     { ...observation, evidence: "a fabricated quote" },
   ], files, [])
   assert.equal(result.findings.length, 1)
-  assert.equal(result.rejected, 3)
+  assert.equal(result.rejected, 2)
+  assert.equal(result.relocated, 1)
+  assert.equal(result.findings[0].line, 2)
   assert.equal(result.findings[0].source, "ai")
 })
 
@@ -291,9 +303,13 @@ test("AI observations cannot erase or downgrade static findings", async () => {
   assert.deepEqual(merged.findings, report.findings)
 })
 
-function aiResponse(observations: unknown[] = [], finishReason: "stop" | "length" | "content-filter" = "stop") {
+function aiResponse(observations: unknown[] = [], finishReason: "stop" | "length" | "content-filter" = "stop", assessments: unknown[] = AI_REVIEW_METHODS.map((method) => ({
+  methodId: method.id,
+  summary: "The supplied manifest identifies a test skill; behavior must be reviewed in context.",
+  citations: [{ file: "SKILL.md", line: 1, evidence: "# Test" }],
+}))) {
   return {
-    content: [{ type: "text" as const, text: JSON.stringify({ observations }) }],
+    content: [{ type: "text" as const, text: JSON.stringify({ observations, assessments }) }],
     finishReason: { unified: finishReason, raw: undefined },
     usage: {
       inputTokens: { total: 10, noCache: 10, cacheRead: undefined, cacheWrite: undefined },
@@ -326,9 +342,11 @@ test("AI generation retains valid evidence when another observation violates loc
   const { report, files } = await reviewFixture()
   const model = new MockLanguageModelV4({ doGenerate: aiResponse([observation, { ...observation, title: "x" }, { ...observation, line: 1.5 }]) })
   const result = await addAIReview(report, files, undefined, { model })
-  assert.equal(result.aiReview.status, "partial")
+  assert.equal(result.aiReview.status, "complete")
   assert.equal(result.aiReview.attempts, 1)
   assert.equal(result.findings.filter((finding) => finding.source === "ai").length, 1)
+  assert.equal(result.aiReview.validation?.discardedObservations, 2)
+  assert.equal(result.aiReview.coverage?.fullyReviewedFiles, 2)
   assert.match(result.aiReview.message, /2 invalid or unsupported/)
   assert.deepEqual(result.findings.filter((finding) => finding.source === "static"), report.findings)
   assert.equal(result.riskLevel, "critical")
@@ -338,7 +356,8 @@ test("AI generation bounds observation count and discards unsupported evidence",
   const { report, files } = await reviewFixture()
   const model = new MockLanguageModelV4({ doGenerate: aiResponse([observation, ...Array.from({ length: 14 }, () => ({ ...observation, file: "invented.py" }))]) })
   const result = await addAIReview(report, files, undefined, { model })
-  assert.equal(result.aiReview.status, "partial")
+  assert.equal(result.aiReview.status, "complete")
+  assert.equal(result.aiReview.validation?.discardedObservations, 14)
   assert.match(result.aiReview.message, /14 invalid or unsupported/)
   assert.equal(result.findings.filter((finding) => finding.source === "ai").length, 1)
 })
@@ -416,7 +435,8 @@ test("AI generation retries malformed output as a clearly labeled compact review
   const model = new MockLanguageModelV4({ doGenerate: [malformed, aiResponse(observations)] })
   const result = await addAIReview(report, files, undefined, { model })
   assert.equal(model.doGenerateCalls.length, 2)
-  assert.equal(result.aiReview.status, "partial")
+  assert.equal(result.aiReview.status, "complete")
+  assert.equal(result.aiReview.validation?.discardedObservations, 1)
   assert.match(result.aiReview.message, /compact retry limited to 4/)
   assert.match(result.aiReview.message, /1 invalid or unsupported/)
   assert.equal(result.findings.filter((finding) => finding.source === "ai").length, 4)
@@ -490,4 +510,168 @@ test("AI error classification unwraps causes without exposing provider payloads"
   const cycle: { cause?: unknown } = {}
   cycle.cause = cycle
   assert.equal(classifyAIReviewError(cycle).code, "unknown")
+})
+
+test("AI input bounds encoded JSON and keeps original line numbers across sections", () => {
+  const source = Array.from({ length: 3000 }, (_, index) => `Reference line ${index + 1}: \\"local\\"`).join("\n")
+  const plan = prepareReviewPlan([internalFile("SKILL.md", manifest), internalFile("reference.md", source)])
+  const chunks = plan.batches.flatMap((batch) => batch.files).filter((file) => file.path === "reference.md").sort((a, b) => a.startOffset - b.startOffset)
+  assert.equal(chunks.map((chunk) => chunk.content).join(""), source)
+  const later = chunks[1]
+  assert.ok(later.startLine > 1)
+  const match = createCitationMatcher([later])({ file: later.path, line: 1, evidence: later.content.split("\n")[0] })
+  assert.equal(match?.citation.line, later.startLine)
+  assert.equal(match?.relocated, true)
+  for (const batch of plan.batches) {
+    const prompt = createReviewPrompt(batch, [])
+    assert.ok(prompt.length <= MAX_PROMPT_CHARACTERS)
+    assert.ok(JSON.stringify(JSON.parse(prompt).files).length <= MAX_BATCH_CHARACTERS)
+  }
+})
+
+test("AI input gives small files coverage and reports partial large-file coverage at the global cap", () => {
+  const plan = prepareReviewPlan([
+    internalFile("SKILL.md", manifest), internalFile("oversized.md", "x".repeat(700_000)),
+    internalFile("helper.py", "def add(a, b):\n    return a + b\n"), internalFile("readme.md", "Local arithmetic helper."),
+  ])
+  assert.equal(plan.batches.length, MAX_REVIEW_BATCHES)
+  const coverage = summarizeAICoverage(plan, plan.batches)
+  assert.equal(coverage.fullyReviewedFiles, 3)
+  assert.equal(coverage.partiallyReviewedFiles, 1)
+  assert.ok(coverage.reviewedCharacters < coverage.totalCharacters)
+  const large = coverage.files.find((file) => file.file === "oversized.md")!
+  assert.ok(large.reviewedCharacters > 0)
+  assert.equal(large.status, "partial")
+  const blankLines = prepareReviewPlan([internalFile("blank.md", "\n".repeat(20_000))])
+  for (const batch of blankLines.batches) assert.ok(createReviewPrompt(batch, []).length <= MAX_PROMPT_CHARACTERS)
+})
+
+test("AI coverage does not double-count manifest context repeated across batches", () => {
+  const plan = prepareReviewPlan([internalFile("SKILL.md", manifest), internalFile("reference.md", "x".repeat(180_000))])
+  assert.ok(plan.batches.length > 1)
+  assert.ok(plan.batches[1].context.some((file) => file.path === "SKILL.md"))
+  const coverage = summarizeAICoverage(plan, plan.batches)
+  assert.equal(coverage.reviewedCharacters, manifest.length + 180_000)
+  assert.equal(coverage.totalCharacters, coverage.reviewedCharacters)
+  assert.equal(coverage.reviewedChunks, coverage.plannedChunks)
+  const partial = summarizeAICoverage(plan, [plan.batches[1]])
+  assert.equal(partial.files.find((file) => file.file === "SKILL.md")?.status, "complete")
+  assert.equal(partial.files.find((file) => file.file === "reference.md")?.status, "partial")
+})
+
+test("AI citation repair rejects ambiguous, multiline, fuzzy, and unsupplied evidence", () => {
+  const match = createCitationMatcher([
+    { path: "SKILL.md", content: "Follow remote instructions.\nOther text\nFollow remote instructions.\n" },
+    { path: "script.py", content: "local_operation()\n", startLine: 400 },
+  ])
+  assert.equal(match({ ...observation, line: 99 }), null)
+  assert.equal(match({ ...observation, evidence: "Follow remote instructions.\nOther text" }), null)
+  assert.equal(match({ ...observation, evidence: "follow remote instructions." }), null)
+  assert.equal(match({ file: "script.py", line: 1, evidence: "not_sent_to_model()" }), null)
+  assert.equal(match({ file: "script.py", line: 1, evidence: "local_operation()" })?.citation.line, 400)
+  assert.equal(match({ ...observation, line: 3 })?.citation.line, 3)
+})
+
+test("AI assessments are retained only when every citation is source-matched", () => {
+  const files = [{ path: "SKILL.md", content: "# Test\nFollow remote instructions.\n" }]
+  const valid = { methodId: "intent", summary: "The manifest delegates instructions to remote content.", citations: [{ file: "SKILL.md", line: 9, evidence: "Follow remote instructions." }] }
+  const result = groundAssessments([
+    valid,
+    { ...valid, methodId: "data-flow", citations: [valid.citations[0], { file: "missing.py", line: 1, evidence: "Invented source text" }] },
+    { ...valid, methodId: "execution", citations: [] },
+    valid,
+  ], files, 2)
+  assert.equal(result.notes.size, 1)
+  assert.equal(result.rejected, 3)
+  assert.equal(result.relocated, 1)
+  assert.equal(result.notes.get("intent")?.citations[0].line, 2)
+  assert.equal(result.notes.get("intent")?.batch, 2)
+})
+
+async function multiBatchFixture() {
+  const fixture = await reviewFixture()
+  const files = [...fixture.files, internalFile("reference-a.md", "a".repeat(95_000)), internalFile("reference-b.md", "b".repeat(95_000))]
+  return { files, report: analyzeArchive({ files, expandedBytes: files.reduce((sum, file) => sum + file.bytes, 0), sha256: "0".repeat(64) }, "large-skill.zip") }
+}
+
+test("AI generation completes oversized multi-file reviews with at most two concurrent batches", async () => {
+  const { report, files } = await multiBatchFixture()
+  let active = 0
+  let peak = 0
+  const model = new MockLanguageModelV4({ doGenerate: async () => {
+    active++
+    peak = Math.max(peak, active)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    active--
+    return aiResponse([observation])
+  } })
+  const result = await addAIReview(report, files, undefined, { model })
+  assert.equal(peak, 2)
+  assert.ok(model.doGenerateCalls.length > 1 && model.doGenerateCalls.length <= MAX_REVIEW_BATCHES)
+  assert.equal(result.aiReview.status, "complete")
+  assert.equal(result.aiReview.coverage?.fullyReviewedFiles, files.length)
+  assert.equal(result.aiReview.coverage?.reviewedCharacters, result.aiReview.coverage?.totalCharacters)
+  assert.equal(result.aiReview.validation?.acceptedObservations, 1)
+  assert.equal(result.aiReview.methods?.length, 6)
+  assert.ok(result.aiReview.methods?.every((method) => method.status === "reviewed" && method.notes.length === model.doGenerateCalls.length))
+  assert.deepEqual(result.findings.filter((finding) => finding.source === "static"), report.findings)
+})
+
+test("AI generation preserves completed batches when another batch fails", async (context) => {
+  context.mock.method(console, "warn", () => undefined)
+  const { report, files } = await multiBatchFixture()
+  let calls = 0
+  const model = new MockLanguageModelV4({ doGenerate: async () => {
+    if (++calls === 1) throw providerError(403)
+    return aiResponse([observation])
+  } })
+  const result = await addAIReview(report, files, undefined, { model })
+  const coverage = result.aiReview.coverage!
+  assert.equal(result.aiReview.status, "partial")
+  assert.equal(result.aiReview.failureCode, "configuration")
+  assert.ok(coverage.completedBatches > 0 && coverage.completedBatches < coverage.plannedBatches)
+  assert.ok(coverage.reviewedCharacters > 0 && coverage.reviewedCharacters < coverage.totalCharacters)
+  assert.equal(result.findings.filter((finding) => finding.source === "ai").length, 1)
+  assert.match(result.aiReview.message, /Completed batches and their findings were retained/)
+  assert.deepEqual(result.findings.filter((finding) => finding.source === "static"), report.findings)
+  assert.equal(result.riskLevel, "critical")
+})
+
+test("AI generation does not count missing assessments as completed review lenses", async () => {
+  const { report, files } = await reviewFixture()
+  const model = new MockLanguageModelV4({ doGenerate: aiResponse([], "stop", []) })
+  const result = await addAIReview(report, files, undefined, { model })
+  assert.equal(result.aiReview.status, "complete")
+  assert.equal(result.aiReview.coverage?.fullyReviewedFiles, 2)
+  assert.equal(result.aiReview.methods?.filter((method) => method.notes.length).length, 0)
+  assert.ok(result.aiReview.methods?.every((method) => method.status === "not-reviewed"))
+  assert.match(result.aiReview.message, /Some review lenses did not return supported assessments/)
+})
+
+test("AI generation sends no opaque file contents and issues no empty-source model call", async () => {
+  const { report } = await reviewFixture()
+  const model = new MockLanguageModelV4({ doGenerate: aiResponse() })
+  const result = await addAIReview(report, [{ ...internalFile("asset.bin", ""), content: null, kind: "binary", status: "not-inspected" }], undefined, { model })
+  assert.equal(model.doGenerateCalls.length, 0)
+  assert.equal(result.aiReview.attempts, 0)
+  assert.equal(result.aiReview.totalTextFiles, 0)
+  assert.match(result.aiReview.message, /No source text was sent/)
+})
+
+test("AI HTML and JSON exports retain methods, coverage, and validation without executable markup", async () => {
+  const { report, files } = await reviewFixture()
+  const result = await addAIReview(report, files, undefined, { model: new MockLanguageModelV4({ doGenerate: aiResponse([observation]) }) })
+  result.aiReview.methods![0].notes[0].summary = '<script>alert("untrusted")</script>'
+  const html = buildHtmlReport([result])
+  assert.match(html, /AI-assisted deep review/)
+  assert.match(html, /Cross-file consistency/)
+  assert.match(html, /File-by-file AI coverage/)
+  assert.match(html, /Evidence validation/)
+  assert.match(html, /SKILL.md:1/)
+  assert.ok(!html.includes("<script>"))
+  assert.ok(html.includes("&lt;script&gt;"))
+  const decoded = JSON.parse(JSON.stringify(result))
+  assert.equal(decoded.aiReview.methods.length, 6)
+  assert.equal(decoded.aiReview.coverage.fullyReviewedFiles, 2)
+  assert.equal(decoded.aiReview.validation.acceptedObservations, 1)
 })

@@ -1,8 +1,28 @@
-import { CATEGORIES, formatBytes, riskLabel, type ScanReport } from "./types"
+import { AI_REVIEW_METHODS, CATEGORIES, formatBytes, riskLabel, type ScanReport } from "./types"
 import { RESEARCH_SOURCES } from "./research"
 
 export function escapeHtml(value: unknown): string {
   return String(value).replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!)
+}
+
+function buildHtmlAIReview(report: ScanReport) {
+  const review = report.aiReview
+  if (review.status === "not-requested") return ""
+  const e = escapeHtml
+  const coverage = review.coverage
+  const validation = review.validation
+  return `
+    <h3>AI-assisted deep review</h3>
+    <p>${e(review.message)}</p>
+    <p>Six analytical lenses within the model review, not six independent scanners. Citations are matched to source text; this does not verify the model's interpretation or certify safety. Static findings remain unchanged.</p>
+    <dl><dt>Lenses with evidence</dt><dd>${review.methods?.filter((method) => method.notes.length > 0).length ?? 0} / ${AI_REVIEW_METHODS.length}</dd><dt>Additional AI findings</dt><dd>${report.findings.filter((finding) => finding.source === "ai").length}</dd>${coverage ? `<dt>AI source coverage</dt><dd>${coverage.reviewedCharacters} / ${coverage.totalCharacters} redacted source characters; ${coverage.fullyReviewedFiles} / ${review.totalTextFiles} text files fully reviewed</dd><dt>Analysis batches</dt><dd>${coverage.completedBatches} / ${coverage.plannedBatches} returned usable responses</dd>` : ""}</dl>
+    ${AI_REVIEW_METHODS.map((definition) => {
+      const method = review.methods?.find((item) => item.id === definition.id)
+      return `<article><h4>${e(definition.title)} · ${method?.status === "reviewed" ? "Evidence-backed" : method?.notes.length ? "Limited context" : "No supported assessment"}</h4><p>${e(definition.description)}</p>${method?.findingCount ? `<p>${method.findingCount} related static or AI indicators</p>` : ""}${method?.notes.length ? method.notes.map((note) => `<p>${e(note.summary)}</p>${note.citations.map((citation) => `<p class="hash">${e(citation.file)}:${citation.line}</p><pre>${e(citation.evidence)}</pre>`).join("")}<p>Analysis batch ${note.batch}; limited to its supplied source sections.</p>`).join("") : "<p>No usable, source-backed assessment was returned for this lens. This is not a passed check.</p>"}</article>`
+    }).join("")}
+    ${coverage ? `<h4>File-by-file AI coverage</h4><p>Binary files are excluded. Large files are split into sections within a four-batch input budget and shared time limit. Partial source lines may be included; character coverage is authoritative.</p><table><thead><tr><th>File</th><th>AI coverage</th><th>Characters reviewed / total</th><th>Source lines</th></tr></thead><tbody>${coverage.files.map((file) => `<tr><td>${e(file.file)}</td><td>${e(file.status)}</td><td>${file.reviewedCharacters} / ${file.totalCharacters}</td><td>${file.reviewedRanges.map((range) => `${range.startLine}–${range.endLine}`).join(", ") || "None"}</td></tr>`).join("")}</tbody></table>` : ""}
+    ${validation ? `<h4>Evidence validation</h4><dl><dt>Accepted findings</dt><dd>${validation.acceptedObservations}</dd><dt>Withheld observations</dt><dd>${validation.discardedObservations}</dd><dt>Withheld assessments</dt><dd>${validation.discardedAssessments}</dd><dt>Exact-quote line corrections</dt><dd>${validation.relocatedCitations}</dd></dl><p>Incorrect line numbers are corrected only when a verbatim quote identifies one unique source line in the supplied sections. Unsupported claims are excluded.</p>` : ""}
+  `
 }
 
 export function buildHtmlReport(reports: ScanReport[], sample = false) {
@@ -14,6 +34,7 @@ export function buildHtmlReport(reports: ScanReport[], sample = false) {
       <p class="verdict">${e(riskLabel(report.riskLevel))}${!report.coverage.complete ? " · Incomplete content coverage" : ""}</p>
       <p>${e(report.summary)}</p>
       <dl><dt>Scan time (UTC)</dt><dd>${e(report.scannedAt)}</dd><dt>Ruleset</dt><dd>${e(report.rulesetVersion)} · ${report.rulesChecked} checks</dd><dt>SHA-256</dt><dd class="hash">${e(report.archiveSha256)}</dd><dt>Coverage</dt><dd>${report.coverage.inspectedFiles} / ${report.coverage.totalFiles} file contents inspected · ${e(formatBytes(report.coverage.expandedBytes))} expanded</dd><dt>AI review</dt><dd>${e(report.aiReview.status)}${report.aiReview.model ? ` · ${e(report.aiReview.model)}` : ""}. ${e(report.aiReview.message)}</dd></dl>
+      ${buildHtmlAIReview(report)}
       <h3>Findings (${report.findings.length})</h3>
       ${report.findings.length ? report.findings.map((finding) => `<article><h4>${e(finding.severity.toUpperCase())} — ${e(finding.title)}</h4><p>${e(CATEGORIES[finding.category])} · ${e(finding.ruleId)} · ${e(finding.source)} · ${e(finding.confidence)} confidence</p><p class="hash">${e(finding.file)}${finding.line ? `:${finding.line}` : " (file metadata)"}</p><pre>${e(finding.evidence)}</pre><p>${e(finding.description)}</p><p><strong>Recommended action:</strong> ${e(finding.recommendation)}</p></article>`).join("") : "<p>No configured threat indicators were detected. This is not a guarantee of safety.</p>"}
       <h3>File inventory</h3>

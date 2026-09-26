@@ -108,6 +108,15 @@
 .research-section { padding-block: 54px 64px; background: var(--card); border-block: 1px solid var(--border); }
 .report-shell { margin-block: 32px; padding: 30px; border: 1px solid var(--border); border-radius: 20px; background: var(--card); box-shadow: 0 8px 30px color-mix(in srgb, var(--brand-navy) 3%, transparent); }
 .report-metric { padding: 20px; background: var(--muted); border-radius: 12px; }
+.ai-review-summary { padding: 28px; border-radius: 16px; background: var(--brand-navy); color: var(--brand-white); }
+.ai-review-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; border-block: 1px solid color-mix(in srgb, var(--brand-white) 18%, transparent); padding-block: 20px; }
+.ai-methods { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 12px; }
+.ai-method-item { min-width: 0; padding-inline: 18px; border: 1px solid var(--border); border-radius: 12px; }
+@media (max-width: 639px) {
+  .ai-review-summary { padding: 20px; }
+  .ai-review-metrics { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+  .ai-methods { grid-template-columns: minmax(0, 1fr); }
+}
 .evidence-block { padding: 16px; border-radius: 8px; background: var(--panel, var(--brand-navy)); color: var(--brand-white); white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; unicode-bidi: plaintext; font-size: 14px; line-height: 1.6; }
 .inventory-row { padding: 14px 16px; border-bottom: 1px solid var(--border); }
 .inventory-row:last-child { border-bottom: none; }
