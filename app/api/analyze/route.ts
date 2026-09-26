@@ -30,7 +30,9 @@ export async function POST(request: Request) {
     if (ai === "true") reservation.enableAI()
     const archive = await inspectArchive(Buffer.from(await upload.arrayBuffer()), request.signal)
     let report = analyzeArchive(archive, upload.name, started)
-    if (ai === "true" && !request.signal.aborted) report = await addAIReview(report, archive.files, request.signal)
+    if (ai === "true" && !request.signal.aborted) {
+      report = await addAIReview(report, archive.files, request.signal, { timeoutMs: Math.max(0, 80_000 - (Date.now() - started)) })
+    }
     if (request.signal.aborted) throw new ArchiveError("The scan was cancelled.", 499)
     report.durationMs = Date.now() - started
     return Response.json({ report }, { headers: responseHeaders })

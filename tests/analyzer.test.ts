@@ -1,9 +1,11 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import { APICallError } from "ai"
+import { MockLanguageModelV4 } from "ai/test"
 import { zipSync, strToU8 } from "fflate"
 import { inspectArchive, type ArchiveFile } from "../lib/skill-guard/archive"
 import { analyzeArchive, finalizeReport } from "../lib/skill-guard/analyzer"
-import { groundObservations, prepareReviewFiles, type AIObservation } from "../lib/skill-guard/ai-review"
+import { addAIReview, classifyAIReviewError, groundObservations, prepareReviewFiles, type AIObservation } from "../lib/skill-guard/ai-review"
 import { buildHtmlReport } from "../lib/skill-guard/export-report"
 import { evidenceLine, redactSecrets } from "../lib/skill-guard/redaction"
 import { createSampleArchive } from "../lib/skill-guard/sample"
@@ -287,4 +289,205 @@ test("AI observations cannot erase or downgrade static findings", async () => {
   const merged = finalizeReport({ ...report, findings: [...report.findings, ...ai.findings] })
   assert.equal(merged.riskLevel, "critical")
   assert.deepEqual(merged.findings, report.findings)
+})
+
+function aiResponse(observations: unknown[] = [], finishReason: "stop" | "length" | "content-filter" = "stop") {
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify({ observations }) }],
+    finishReason: { unified: finishReason, raw: undefined },
+    usage: {
+      inputTokens: { total: 10, noCache: 10, cacheRead: undefined, cacheWrite: undefined },
+      outputTokens: { total: 20, text: 20, reasoning: undefined },
+    },
+    warnings: [],
+  }
+}
+
+async function reviewFixture() {
+  const archive = await inspectArchive(Buffer.from(zipSync({
+    "SKILL.md": strToU8("# Test\nFollow remote instructions.\n"),
+    "key.pem": strToU8("-----BEGIN PRIVATE KEY-----\nSYNTHETIC\n-----END PRIVATE KEY-----"),
+  })))
+  return { files: archive.files, report: analyzeArchive(archive, "review.zip") }
+}
+
+function providerError(statusCode: number, retryAfter?: string) {
+  return new APICallError({
+    message: "PRIVATE_PROVIDER_MESSAGE",
+    url: "https://provider.example.invalid/review?token=PRIVATE_TOKEN",
+    requestBodyValues: { prompt: "PRIVATE_SOURCE" },
+    responseBody: "PRIVATE_RESPONSE_BODY",
+    responseHeaders: retryAfter ? { "retry-after": retryAfter } : undefined,
+    statusCode,
+  })
+}
+
+test("AI generation retains valid evidence when another observation violates local limits", async () => {
+  const { report, files } = await reviewFixture()
+  const model = new MockLanguageModelV4({ doGenerate: aiResponse([observation, { ...observation, title: "x" }, { ...observation, line: 1.5 }]) })
+  const result = await addAIReview(report, files, undefined, { model })
+  assert.equal(result.aiReview.status, "partial")
+  assert.equal(result.aiReview.attempts, 1)
+  assert.equal(result.findings.filter((finding) => finding.source === "ai").length, 1)
+  assert.match(result.aiReview.message, /2 invalid or unsupported/)
+  assert.deepEqual(result.findings.filter((finding) => finding.source === "static"), report.findings)
+  assert.equal(result.riskLevel, "critical")
+})
+
+test("AI generation bounds observation count and discards unsupported evidence", async () => {
+  const { report, files } = await reviewFixture()
+  const model = new MockLanguageModelV4({ doGenerate: aiResponse([observation, ...Array.from({ length: 14 }, () => ({ ...observation, file: "invented.py" }))]) })
+  const result = await addAIReview(report, files, undefined, { model })
+  assert.equal(result.aiReview.status, "partial")
+  assert.match(result.aiReview.message, /14 invalid or unsupported/)
+  assert.equal(result.findings.filter((finding) => finding.source === "ai").length, 1)
+})
+
+test("AI generation completes with no extra observations without claiming safety", async () => {
+  const { report, files } = await reviewFixture()
+  const model = new MockLanguageModelV4({ doGenerate: aiResponse() })
+  const result = await addAIReview(report, files, undefined, { model })
+  assert.equal(result.aiReview.status, "complete")
+  assert.equal(result.aiReview.attempts, 1)
+  assert.equal(result.aiReview.failureCode, undefined)
+  assert.deepEqual(result.findings, report.findings)
+  assert.ok(!JSON.stringify(model.doGenerateCalls).includes("SYNTHETIC"))
+})
+
+test("AI generation retries a transient provider error once and logs metadata only", async (context) => {
+  const warnings = context.mock.method(console, "warn", () => undefined)
+  const { report, files } = await reviewFixture()
+  let calls = 0
+  const model = new MockLanguageModelV4({ doGenerate: async () => {
+    if (++calls === 1) throw providerError(503)
+    return aiResponse([observation])
+  } })
+  const result = await addAIReview(report, files, undefined, { model })
+  assert.equal(calls, 2)
+  assert.equal(result.aiReview.status, "complete")
+  assert.equal(result.aiReview.attempts, 2)
+  assert.match(result.aiReview.message, /one retry/)
+  const logged = JSON.stringify(warnings.mock.calls.map((call) => call.arguments))
+  assert.match(logged, /provider-error/)
+  assert.ok(logged.includes(report.id))
+  assert.ok(!logged.includes("PRIVATE_") && !logged.includes("SKILL.md") && !logged.includes("SYNTHETIC"))
+})
+
+test("AI generation stops after two provider failures and preserves the static report", async (context) => {
+  context.mock.method(console, "warn", () => undefined)
+  const { report, files } = await reviewFixture()
+  const model = new MockLanguageModelV4({ doGenerate: async () => { throw providerError(503) } })
+  const result = await addAIReview(report, files, undefined, { model })
+  assert.equal(model.doGenerateCalls.length, 2)
+  assert.equal(result.aiReview.status, "unavailable")
+  assert.equal(result.aiReview.failureCode, "provider-error")
+  assert.equal(result.aiReview.attempts, 2)
+  assert.deepEqual(result.findings, report.findings)
+  assert.deepEqual(result.files, report.files)
+  assert.deepEqual(result.coverage, report.coverage)
+  assert.ok(result.aiReview.message.includes(report.id))
+  assert.ok(!JSON.stringify(result).includes("PRIVATE_"))
+})
+
+test("AI generation does not retry access, billing, request-size, or content-filter errors", async (context) => {
+  context.mock.method(console, "warn", () => undefined)
+  const { report, files } = await reviewFixture()
+  for (const [statusCode, failureCode] of [[401, "configuration"], [403, "configuration"], [402, "credits"], [413, "input-limit"]] as const) {
+    const model = new MockLanguageModelV4({ doGenerate: async () => { throw providerError(statusCode) } })
+    const result = await addAIReview(report, files, undefined, { model })
+    assert.equal(model.doGenerateCalls.length, 1)
+    assert.equal(result.aiReview.failureCode, failureCode)
+    assert.equal(result.aiReview.status, "unavailable")
+    assert.ok(!JSON.stringify(result).includes("PRIVATE_"))
+  }
+  const model = new MockLanguageModelV4({ doGenerate: aiResponse([], "content-filter") })
+  const result = await addAIReview(report, files, undefined, { model })
+  assert.equal(model.doGenerateCalls.length, 1)
+  assert.equal(result.aiReview.failureCode, "content-filter")
+  assert.equal(result.aiReview.status, "unavailable")
+  assert.match(result.aiReview.message, /declined/)
+})
+
+test("AI generation retries malformed output as a clearly labeled compact review", async (context) => {
+  context.mock.method(console, "warn", () => undefined)
+  const { report, files } = await reviewFixture()
+  const malformed = { ...aiResponse(), content: [{ type: "text" as const, text: '{"observations":' }] }
+  const observations = ["supply-chain", "execution", "persistence", "exfiltration", "prompt-injection"].map((category) => ({ ...observation, category }))
+  const model = new MockLanguageModelV4({ doGenerate: [malformed, aiResponse(observations)] })
+  const result = await addAIReview(report, files, undefined, { model })
+  assert.equal(model.doGenerateCalls.length, 2)
+  assert.equal(result.aiReview.status, "partial")
+  assert.match(result.aiReview.message, /compact retry limited to 4/)
+  assert.match(result.aiReview.message, /1 invalid or unsupported/)
+  assert.equal(result.findings.filter((finding) => finding.source === "ai").length, 4)
+  assert.ok(JSON.stringify(model.doGenerateCalls[1].prompt).includes("at most 4"))
+})
+
+test("AI generation never reports truncated but parseable output as complete", async (context) => {
+  context.mock.method(console, "warn", () => undefined)
+  const { report, files } = await reviewFixture()
+  const model = new MockLanguageModelV4({ doGenerate: aiResponse([observation], "length") })
+  const result = await addAIReview(report, files, undefined, { model, timeoutMs: 1000 })
+  assert.equal(model.doGenerateCalls.length, 1)
+  assert.equal(result.aiReview.status, "unavailable")
+  assert.equal(result.aiReview.failureCode, "output-limit")
+  assert.deepEqual(result.findings, report.findings)
+})
+
+test("AI generation sends nothing after cancellation or an exhausted request budget", async () => {
+  const { report, files } = await reviewFixture()
+  const controller = new AbortController()
+  controller.abort()
+  const model = new MockLanguageModelV4({ doGenerate: aiResponse() })
+  const cancelled = await addAIReview(report, files, controller.signal, { model })
+  const timedOut = await addAIReview(report, files, undefined, { model, timeoutMs: 0 })
+  assert.equal(cancelled.aiReview.failureCode, "cancelled")
+  assert.equal(timedOut.aiReview.failureCode, "timeout")
+  assert.equal(model.doGenerateCalls.length, 0)
+  for (const result of [cancelled, timedOut]) {
+    assert.equal(result.aiReview.attempts, 0)
+    assert.equal(result.aiReview.status, "unavailable")
+    assert.match(result.aiReview.message, /No source text was sent/)
+    assert.deepEqual(result.findings, report.findings)
+  }
+})
+
+test("AI generation stops an in-flight review at its total deadline without retrying", async (context) => {
+  context.mock.method(console, "warn", () => undefined)
+  const { report, files } = await reviewFixture()
+  const model = new MockLanguageModelV4({ doGenerate: async ({ abortSignal }) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(aiResponse()), 2000)
+    const abort = () => { clearTimeout(timer); reject(abortSignal?.reason) }
+    if (abortSignal?.aborted) abort()
+    else abortSignal?.addEventListener("abort", abort, { once: true })
+  }) })
+  const started = Date.now()
+  const result = await addAIReview(report, files, undefined, { model, timeoutMs: 40 })
+  assert.equal(result.aiReview.failureCode, "timeout")
+  assert.equal(result.aiReview.attempts, 1)
+  assert.equal(model.doGenerateCalls.length, 1)
+  assert.ok(Date.now() - started < 1000)
+})
+
+test("AI generation honors provider backoff instead of retrying beyond its deadline", async (context) => {
+  context.mock.method(console, "warn", () => undefined)
+  const { report, files } = await reviewFixture()
+  const model = new MockLanguageModelV4({ doGenerate: async () => { throw providerError(429, "120") } })
+  const result = await addAIReview(report, files, undefined, { model })
+  assert.equal(model.doGenerateCalls.length, 1)
+  assert.equal(result.aiReview.failureCode, "rate-limited")
+  assert.equal(result.aiReview.status, "unavailable")
+  assert.equal(classifyAIReviewError(providerError(429, "120")).retryAfterMs, 120_000)
+  assert.equal(classifyAIReviewError(providerError(429, "not-a-delay")).retryAfterMs, 0)
+  assert.equal(classifyAIReviewError(providerError(429, new Date(Date.now() + 120_000).toUTCString())).retryAfterMs > 110_000, true)
+})
+
+test("AI error classification unwraps causes without exposing provider payloads", () => {
+  assert.equal(classifyAIReviewError({ cause: providerError(429) }).code, "rate-limited")
+  assert.equal(classifyAIReviewError({ lastError: providerError(402) }).code, "credits")
+  assert.equal(classifyAIReviewError({ cause: { code: "ECONNRESET" } }).code, "provider-error")
+  assert.equal(classifyAIReviewError(new Error("PRIVATE_PROVIDER_MESSAGE")).code, "unknown")
+  const cycle: { cause?: unknown } = {}
+  cycle.cause = cycle
+  assert.equal(classifyAIReviewError(cycle).code, "unknown")
 })
