@@ -10,7 +10,7 @@ import { Field, FieldContent, FieldGroup, FieldLabel } from "@/components/ui/fie
 import { Progress, ProgressLabel, ProgressValue } from "@/components/ui/progress"
 import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
-import { formatBytes } from "@/lib/skill-guard/types"
+import { AI_REVIEW_RATE_LIMIT, RATE_LIMIT_WINDOW_SECONDS, SCAN_RATE_LIMIT, formatBytes } from "@/lib/skill-guard/types"
 import { cn } from "@/lib/utils"
 import { useSkillScan, type QueuedSkill } from "./use-skill-scan"
 import { ScanResults } from "./scan-results"
@@ -79,6 +79,9 @@ export function SkillScanner() {
   const dragDepth = useRef(0)
   const [dragging, setDragging] = useState(false)
   const busy = scan.isScanning || scan.loadingSample
+  const coolingDown = scan.retryAfterSeconds > 0
+  const retryLabel = `${Math.floor(scan.retryAfterSeconds / 60)}:${String(scan.retryAfterSeconds % 60).padStart(2, "0")}`
+  const pendingCount = scan.queue.filter((item) => item.status !== "complete").length || scan.queue.length
   const completed = scan.queue.filter((item) => item.status === "complete" || item.status === "error").length
   const activeStep = scan.isScanning ? 1 : scan.reports.length > 0 ? 2 : 0
 
@@ -183,6 +186,16 @@ export function SkillScanner() {
                   </Field>
                 </FieldGroup>
                 {scan.error && <Alert variant="destructive"><CircleAlert /><AlertTitle>One quick check</AlertTitle><AlertDescription>{scan.error}</AlertDescription></Alert>}
+                {coolingDown && (
+                  <Alert id="scan-cooldown" role="status">
+                    <Info />
+                    <AlertTitle>{scan.cooldownScope === "ai" ? "AI review paused" : "Scans paused"}</AlertTitle>
+                    <AlertDescription>
+                      <p>Try again in <span aria-live="off" className="font-mono tabular-nums">{retryLabel}</span>. Your unscanned files stay in the queue.</p>
+                      {scan.cooldownScope === "ai" && <p>Turn off AI-assisted review to continue with static analysis.</p>}
+                    </AlertDescription>
+                  </Alert>
+                )}
                 <div className="flex flex-col gap-3">
                   {scan.isScanning ? (
                     <div className="flex flex-col gap-3" role="status" aria-live="polite">
@@ -193,17 +206,18 @@ export function SkillScanner() {
                       <Button variant="outline" size="lg" onClick={scan.cancel}><LoaderCircle className="animate-spin" data-icon="inline-start" />Cancel scan</Button>
                     </div>
                   ) : (
-                    <Button size="lg" className="w-full" disabled={busy || !scan.ready} onClick={() => scan.queue.length ? scan.scan() : fileInput.current?.click()}>
-                      <ScanLine data-icon="inline-start" />{scan.queue.length ? `Analyze ${scan.queue.length > 1 ? `${scan.queue.length} skills` : "skill"}` : "Choose skills to analyze"}<ArrowRight data-icon="inline-end" />
+                    <Button size="lg" className="w-full" disabled={busy || !scan.ready || coolingDown} aria-describedby={coolingDown ? "scan-cooldown" : undefined} onClick={() => scan.queue.length ? scan.scan() : fileInput.current?.click()}>
+                      <ScanLine data-icon="inline-start" />{coolingDown ? `Retry in ${retryLabel}` : scan.queue.length ? `Analyze ${pendingCount > 1 ? `${pendingCount} skills` : "skill"}` : "Choose skills to analyze"}<ArrowRight data-icon="inline-end" />
                     </Button>
                   )}
                   <div className="flex items-center justify-center gap-1 text-sm">
                     <span className="text-muted-foreground">Just exploring?</span>
-                    <Button variant="link" size="xs" disabled={busy || !scan.ready} onClick={scan.trySample}>
+                    <Button variant="link" size="xs" disabled={busy || !scan.ready || coolingDown} onClick={scan.trySample}>
                       {scan.loadingSample ? <LoaderCircle className="animate-spin" data-icon="inline-start" /> : null}
                       Try a sample scan <ArrowUpRight data-icon="inline-end" />
                     </Button>
                   </div>
+                  <p className="text-center text-sm text-muted-foreground">Per network: {SCAN_RATE_LIMIT} scans, including up to {AI_REVIEW_RATE_LIMIT} AI reviews, per {RATE_LIMIT_WINDOW_SECONDS / 60} minutes.</p>
                 </div>
               </div>
             </div>

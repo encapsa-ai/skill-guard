@@ -2,7 +2,14 @@
 
 import { useEffect, useRef, useState } from "react"
 import useSWRMutation from "swr/mutation"
-import { MAX_ARCHIVES, MAX_ZIP_BYTES, type ScanReport } from "@/lib/skill-guard/types"
+import { MAX_ARCHIVES, MAX_ZIP_BYTES, RATE_LIMIT_WINDOW_SECONDS, type RateLimitScope, type ScanReport } from "@/lib/skill-guard/types"
+
+class ScanRequestError extends Error {
+  constructor(message: string, readonly status: number, readonly scope: RateLimitScope, readonly retryAfterSeconds: number) {
+    super(message)
+    this.name = "ScanRequestError"
+  }
+}
 
 export interface QueuedSkill {
   id: string
@@ -20,7 +27,14 @@ async function analyzeArchive(url: string, { arg }: { arg: { file: File; aiRevie
   const response = await fetch(url, { method: "POST", body: data, signal: arg.signal })
   if (!response.ok) {
     const error = await response.json().catch(() => null)
-    throw new Error(error?.error ?? (response.status === 413 ? "This archive exceeds the upload limit." : "The scan could not finish. Please try again."))
+    const retry = Number(response.headers.get("Retry-After"))
+    const fallback = response.status === 429 ? RATE_LIMIT_WINDOW_SECONDS : 15
+    throw new ScanRequestError(
+      typeof error?.error === "string" ? error.error : response.status === 413 ? "This archive exceeds the upload limit." : "The scan could not finish. Please try again.",
+      response.status,
+      error?.scope === "ai" ? "ai" : "scan",
+      Number.isFinite(retry) && retry > 0 ? Math.min(3600, Math.ceil(retry)) : fallback,
+    )
   }
   const payload = await response.json() as { report: ScanReport }
   return payload.report
@@ -40,6 +54,10 @@ export function useSkillScan() {
   const [isSample, setIsSample] = useState(false)
   const [error, setError] = useState("")
   const [ready, setReady] = useState(false)
+  const [cooldowns, setCooldowns] = useState({ scan: 0, ai: 0 })
+  const [now, setNow] = useState(0)
+  const cooldownScope: RateLimitScope = aiReview && cooldowns.ai > cooldowns.scan ? "ai" : "scan"
+  const retryAfterSeconds = Math.max(0, Math.ceil((cooldowns[cooldownScope] - now) / 1000))
   const abortController = useRef<AbortController | null>(null)
   const busy = useRef(false)
   const { trigger } = useSWRMutation("/api/analyze", analyzeArchive)
@@ -51,13 +69,26 @@ export function useSkillScan() {
   }, [])
 
   useEffect(() => {
-    if (!isScanning && reports.length > 0) {
+    const expires = Math.max(cooldowns.scan, cooldowns.ai)
+    if (!expires) return
+    const tick = () => {
+      const time = Date.now()
+      setNow(time)
+      if (time >= expires) clearInterval(timer)
+    }
+    const timer = setInterval(tick, 1000)
+    tick()
+    return () => clearInterval(timer)
+  }, [cooldowns])
+
+  useEffect(() => {
+    if (!isScanning && reports.length > 0 && queue.every((item) => item.status === "complete")) {
       document.getElementById("scan-report")?.scrollIntoView({
         behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth",
         block: "start",
       })
     }
-  }, [isScanning, reports.length])
+  }, [isScanning, reports.length, queue])
 
   function addFiles(files: File[]) {
     if (busy.current) return
@@ -87,17 +118,20 @@ export function useSkillScan() {
   }
 
   async function scan(items: QueuedSkill[] = queue) {
-    if (busy.current || items.length === 0) return
+    if (busy.current || items.length === 0 || cooldowns[cooldownScope] > Date.now()) return
+    const pending = items.filter((item) => item.status !== "complete")
+    const resuming = pending.length > 0 && pending.length < items.length
+    const toScan = resuming ? pending : items
     busy.current = true
     setIsScanning(true)
     setIsSample(items.every((item) => item.sample))
-    setReports([])
+    if (!resuming) setReports([])
     setError("")
-    setQueue(items.map((item) => ({ ...item, status: "queued", error: undefined })))
+    setQueue(items.map((item) => resuming && item.status === "complete" ? item : { ...item, status: "queued", error: undefined }))
     const controller = new AbortController()
     abortController.current = controller
     try {
-      for (const item of items) {
+      for (const item of toScan) {
         if (controller.signal.aborted) break
         setQueue((previous) => previous.map((entry) => entry.id === item.id ? { ...entry, status: "scanning" } : entry))
         try {
@@ -109,6 +143,12 @@ export function useSkillScan() {
           if (controller.signal.aborted) break
           const message = cause instanceof Error ? cause.message : "This archive could not be scanned."
           setQueue((previous) => previous.map((entry) => entry.id === item.id ? { ...entry, status: "error", error: message } : entry))
+          if (cause instanceof ScanRequestError && (cause.status === 429 || cause.status === 503)) {
+            const time = Date.now()
+            setNow(time)
+            setCooldowns((previous) => ({ ...previous, [cause.scope]: Math.max(previous[cause.scope], time + cause.retryAfterSeconds * 1000) }))
+            break
+          }
         }
       }
     } finally {
@@ -123,7 +163,7 @@ export function useSkillScan() {
   }
 
   async function trySample() {
-    if (busy.current || loadingSample) return
+    if (busy.current || loadingSample || cooldowns[cooldownScope] > Date.now()) return
     setError("")
     try {
       const file = await sampleTrigger()
@@ -147,6 +187,7 @@ export function useSkillScan() {
 
   return {
     queue, reports, aiReview, setAiReview, isScanning, isSample, error, ready, loadingSample,
+    retryAfterSeconds, cooldownScope,
     addFiles, scan, trySample, removeFile, clearFiles,
     cancel: () => abortController.current?.abort(),
   }

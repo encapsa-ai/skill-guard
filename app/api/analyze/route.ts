@@ -2,6 +2,7 @@ import { ArchiveError, inspectArchive } from "@/lib/skill-guard/archive"
 import { analyzeArchive } from "@/lib/skill-guard/analyzer"
 import { addAIReview } from "@/lib/skill-guard/ai-review"
 import { readBoundedFormData, reserveScan, validateScanRequest } from "@/lib/skill-guard/request-guard"
+import { ScanThrottleError } from "@/lib/skill-guard/rate-limit"
 import { MAX_ZIP_BYTES } from "@/lib/skill-guard/types"
 
 export const runtime = "nodejs"
@@ -11,10 +12,10 @@ const responseHeaders = { "Cache-Control": "no-store, max-age=0" }
 
 export async function POST(request: Request) {
   const started = Date.now()
-  let reservation: ReturnType<typeof reserveScan> | undefined
+  let reservation: Awaited<ReturnType<typeof reserveScan>> | undefined
   try {
     validateScanRequest(request)
-    reservation = reserveScan(request)
+    reservation = await reserveScan(request)
     const form = await readBoundedFormData(request)
     if (form.getAll("file").length !== 1 || form.getAll("aiReview").length > 1 || [...form.keys()].some((key) => key !== "file" && key !== "aiReview")) {
       throw new ArchiveError("Send exactly one ZIP archive per request. The app queues multiple archives separately.")
@@ -27,7 +28,7 @@ export async function POST(request: Request) {
       throw new ArchiveError("Provide a .zip archive with a valid filename of 160 characters or fewer.")
     }
     if (!upload.size || upload.size > MAX_ZIP_BYTES) throw new ArchiveError("ZIP archives must be nonempty and no larger than 4 MB.", 413)
-    if (ai === "true") reservation.enableAI()
+    if (ai === "true") await reservation.enableAI()
     const archive = await inspectArchive(Buffer.from(await upload.arrayBuffer()), request.signal)
     let report = analyzeArchive(archive, upload.name, started)
     if (ai === "true" && !request.signal.aborted) {
@@ -35,12 +36,16 @@ export async function POST(request: Request) {
     }
     if (request.signal.aborted) throw new ArchiveError("The scan was cancelled.", 499)
     report.durationMs = Date.now() - started
-    return Response.json({ report }, { headers: responseHeaders })
+    return Response.json({ report }, { headers: { ...responseHeaders, ...reservation.headers } })
   } catch (cause) {
     const error = cause instanceof ArchiveError ? cause : new ArchiveError("The archive could not be analyzed. Please try a smaller, standard ZIP or retry shortly.", 500)
-    return Response.json({ error: error.message }, {
+    const throttle = error instanceof ScanThrottleError ? error : undefined
+    return Response.json({
+      error: error.message,
+      ...(throttle ? { code: throttle.code, scope: throttle.scope, retryAfterSeconds: throttle.retryAfterSeconds } : {}),
+    }, {
       status: error.status,
-      headers: { ...responseHeaders, ...(error.status === 429 ? { "Retry-After": "600" } : {}) },
+      headers: { ...responseHeaders, ...reservation?.headers, ...throttle?.headers },
     })
   } finally {
     reservation?.release()
